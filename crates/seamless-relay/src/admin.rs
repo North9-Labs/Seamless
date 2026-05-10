@@ -252,7 +252,7 @@ async fn health_routes(State(s): State<Arc<AppState>>) -> Json<serde_json::Value
                 tokio::net::TcpStream::connect(&addr),
             )
             .await
-            .map_or(false, |r| r.is_ok());
+            .is_ok_and(|r| r.is_ok());
             (id, if ok { "up" } else { "down" })
         }));
     }
