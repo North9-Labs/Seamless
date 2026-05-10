@@ -1,0 +1,42 @@
+# USAGE
+#   This compose file runs ONLY the relay side (the public half). The client
+#   (`seamless`) is meant to run on a laptop/origin box and dial IN to this
+#   relay with the x25519 + kem pubkeys printed by the relay on first boot:
+#
+#     docker compose up --build relay
+#     docker compose logs relay   # copy the two pubkeys
+#
+#   Then, from the origin host:
+#     seamless --relay <this-host>:4443 --x25519 <hex> --kem <hex> http 3000
+#
+#   The whoami service is a demo HTTP backend used for quick manual tests;
+#   point the client at it with `seamless http 80 --subdomain whoami` and you
+#   should see it respond through the tunnel.
+
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: Seamless/Dockerfile
+    image: seamless-relay:local
+    ports:
+      - "4443:4443/udp"
+      - "8080:8080/tcp"
+    volumes:
+      - seamless-relay-id:/var/lib/seamless
+    networks:
+      - seamless-net
+    restart: unless-stopped
+
+  whoami:
+    image: traefik/whoami
+    networks:
+      - seamless-net
+    restart: unless-stopped
+
+volumes:
+  seamless-relay-id:
+
+networks:
+  seamless-net:
+    driver: bridge

@@ -1,0 +1,1433 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Seamless</title>
+  <script>(function(){const t=localStorage.getItem('seamless-theme')||'dark';document.documentElement.setAttribute('data-theme',t);})();</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@0.441.0/dist/umd/lucide.min.js"></script>
+  <style>
+    :root, [data-theme="dark"] {
+      --bg:          #08080a;
+      --s1:          #0f0f12;
+      --s2:          #16161a;
+      --s3:          #1e1e24;
+      --border:      #2a2a32;
+      --border2:     #3a3a46;
+      --text:        #f0f0f5;
+      --text2:       #9090a8;
+      --text3:       #5a5a72;
+      --blue:        #4f8ef7;
+      --blue2:       #3b7cf4;
+      --blue-glow:   rgba(79,142,247,.18);
+      --blue-dim:    rgba(79,142,247,.12);
+      --green:       #34d399;
+      --green-dim:   rgba(52,211,153,.1);
+      --red:         #f87171;
+      --red-dim:     rgba(248,113,113,.1);
+      --amber:       #fbbf24;
+      --amber-dim:   rgba(251,191,36,.1);
+      --orange:      #fb923c;
+      --orange2:     #f97316;
+      --orange-glow: rgba(249,115,22,.2);
+      --orange-dim:  rgba(249,115,22,.1);
+      --purple:      #c084fc;
+      --purple-dim:  rgba(192,132,252,.1);
+      --mono:        'JetBrains Mono', monospace;
+      --r: 10px; --r-sm: 6px;
+      color-scheme: dark;
+    }
+    [data-theme="light"] {
+      --bg:     #f4f5f8;
+      --s1:     #ffffff;
+      --s2:     #f0f0f6;
+      --s3:     #e6e6f0;
+      --border: #e2e2ec;
+      --border2:#ccccda;
+      --text:   #0a0a14;
+      --text2:  #50507a;
+      --text3:  #9898b8;
+      color-scheme: light;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 13px; line-height: 1.55;
+      min-height: 100vh; display: flex; flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+    /* ── Topbar ──────────────────────────────────────────────── */
+    .topbar {
+      height: 52px; background: var(--s1);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 50;
+      display: flex; align-items: center;
+      padding: 0 20px; flex-shrink: 0;
+    }
+    .tb-brand {
+      display: flex; align-items: center; gap: 9px;
+      margin-right: 24px; flex-shrink: 0; cursor: default; user-select: none;
+    }
+    .logo-icon {
+      width: 30px; height: 30px; border-radius: 8px;
+      background: linear-gradient(135deg, var(--blue2), #7c3aed, var(--orange2));
+      background-size: 200% 200%;
+      animation: gradShift 6s ease-in-out infinite;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px; flex-shrink: 0;
+      box-shadow: 0 0 14px rgba(79,142,247,.22);
+    }
+    @keyframes gradShift { 0%,100%{background-position:0% 50%} 50%{background-position:100% 50%} }
+    .logo-word { font-size: 15px; font-weight: 800; letter-spacing: -.5px; }
+
+    .tb-nav { display: flex; align-items: stretch; flex: 1; overflow-x: auto; height: 52px; }
+    .tb-nav::-webkit-scrollbar { height: 0; }
+    .tb-item {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 0 13px; height: 52px;
+      font-size: 13px; font-weight: 500; color: var(--text2);
+      cursor: pointer; border-bottom: 2px solid transparent;
+      transition: color .14s, border-color .14s, background .14s;
+      white-space: nowrap; user-select: none; flex-shrink: 0;
+    }
+    .tb-item:hover { color: var(--text); background: rgba(128,128,160,.05); }
+    .tb-item.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
+    .tb-cf:hover { color: var(--orange) !important; }
+    .tb-cf.active { color: var(--orange); border-bottom-color: var(--orange); }
+    .tb-div { width: 1px; height: 20px; background: var(--border); margin: auto 6px; flex-shrink: 0; }
+
+    .tb-right { display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 16px; flex-shrink: 0; }
+    .status-pill {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 20px;
+      background: var(--green-dim); border: 1px solid rgba(52,211,153,.22);
+      font-size: 11px; font-weight: 600; color: var(--green);
+    }
+    .s-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--green); flex-shrink: 0;
+      animation: sPulse 2.4s ease infinite;
+    }
+    @keyframes sPulse { 0%,100%{box-shadow:0 0 0 2px var(--green-dim)} 50%{box-shadow:0 0 0 5px transparent} }
+    .theme-btn {
+      width: 34px; height: 34px;
+      background: var(--s2); border: 1px solid var(--border);
+      border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center;
+      cursor: pointer; color: var(--text2);
+      transition: background .14s, color .14s, border-color .14s;
+    }
+    .theme-btn:hover { background: var(--s3); color: var(--text); border-color: var(--border2); }
+
+    /* ── Layout ──────────────────────────────────────────────── */
+    .main { flex: 1; }
+    .section { display: none; animation: fadeUp .18s ease; }
+    .section.active { display: block; }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+
+    /* ── Hero ────────────────────────────────────────────────── */
+    .hero {
+      padding: 22px 28px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+      position: relative; overflow: hidden; background: var(--s1);
+    }
+    .hero::before {
+      content:''; position:absolute; inset:0;
+      background: var(--hero-grad, linear-gradient(135deg, rgba(79,142,247,.05) 0%, transparent 60%));
+      pointer-events: none;
+    }
+    .hero::after {
+      content:''; position:absolute; top:-60%; right:-5%; width:280px; height:280px;
+      background: var(--hero-orb, radial-gradient(circle, rgba(79,142,247,.06) 0%, transparent 65%));
+      pointer-events: none;
+    }
+    .hero-left { position:relative; z-index:1; }
+    .hero-badge {
+      display:inline-flex; align-items:center; gap:5px;
+      padding:2px 9px; border-radius:20px; margin-bottom:6px;
+      font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase;
+      background: var(--hbadge-bg, var(--blue-dim));
+      color: var(--hbadge-color, var(--blue));
+      border: 1px solid var(--hbadge-border, rgba(79,142,247,.25));
+    }
+    .hero-title { font-size:20px; font-weight:800; letter-spacing:-.5px; }
+    .hero-sub   { font-size:12px; color:var(--text2); margin-top:3px; }
+    .hero-actions { display:flex; gap:8px; position:relative; z-index:1; align-items:center; flex-shrink:0; }
+    .cf-hero    { --hero-grad:linear-gradient(135deg,rgba(249,115,22,.06) 0%,transparent 60%); --hero-orb:radial-gradient(circle,rgba(249,115,22,.07) 0%,transparent 65%); --hbadge-bg:var(--orange-dim); --hbadge-color:var(--orange); --hbadge-border:rgba(249,115,22,.3); }
+    .tunnel-hero{ --hero-grad:linear-gradient(135deg,rgba(192,132,252,.05) 0%,transparent 60%); --hero-orb:radial-gradient(circle,rgba(192,132,252,.06) 0%,transparent 65%); --hbadge-bg:var(--purple-dim); --hbadge-color:var(--purple); --hbadge-border:rgba(192,132,252,.25); }
+    .log-hero   { --hero-grad:linear-gradient(135deg,rgba(251,191,36,.04) 0%,transparent 60%); --hero-orb:radial-gradient(circle,rgba(251,191,36,.05) 0%,transparent 65%); --hbadge-bg:var(--amber-dim); --hbadge-color:var(--amber); --hbadge-border:rgba(251,191,36,.25); }
+
+    .content { padding: 20px 28px 48px; display: flex; flex-direction: column; gap: 18px; }
+
+    /* ── Cards ───────────────────────────────────────────────── */
+    .card { background: var(--s1); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+    .card-header {
+      padding: 11px 18px; background: var(--s2);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .card-title { font-size: 11px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: var(--text3); display: flex; align-items: center; gap: 7px; }
+
+    /* ── Stats ───────────────────────────────────────────────── */
+    .stats-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
+    .stat {
+      background: var(--s1); border: 1px solid var(--border); border-radius: var(--r);
+      padding: 16px 18px 14px; position: relative; overflow: hidden;
+      transition: transform .18s, box-shadow .18s, border-color .18s; cursor: default;
+    }
+    .stat::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background: var(--stat-acc, linear-gradient(90deg, var(--blue), var(--purple))); }
+    .stat:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,0,0,.22); border-color:var(--border2); }
+    [data-theme="light"] .stat:hover { box-shadow: 0 4px 16px rgba(0,0,0,.1); }
+    .stat-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+    .stat-ic { width:32px; height:32px; border-radius:8px; background: var(--sic-bg, var(--blue-dim)); color: var(--sic-c, var(--blue)); display:flex; align-items:center; justify-content:center; }
+    .stat-num   { font-size:34px; font-weight:800; letter-spacing:-1.5px; line-height:1; }
+    .stat-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.5px; color:var(--text3); margin-top:5px; }
+    .stat-sub   { font-size:11px; color:var(--text3); margin-top:2px; }
+    .stat-blue   { --stat-acc:linear-gradient(90deg,var(--blue),#818cf8);   --sic-bg:var(--blue-dim);   --sic-c:var(--blue); }
+    .stat-green  { --stat-acc:linear-gradient(90deg,var(--green),#34d399);  --sic-bg:var(--green-dim);  --sic-c:var(--green); }
+    .stat-orange { --stat-acc:linear-gradient(90deg,var(--orange),var(--amber)); --sic-bg:var(--orange-dim); --sic-c:var(--orange); }
+    .stat-purple { --stat-acc:linear-gradient(90deg,var(--purple),#818cf8); --sic-bg:var(--purple-dim); --sic-c:var(--purple); }
+
+    .dash-grid2 { display:grid; grid-template-columns:1fr 320px; gap:18px; }
+    .health-item { display:flex; align-items:center; gap:10px; padding:10px 18px; border-bottom:1px solid var(--border); }
+    .health-item:last-child { border-bottom:none; }
+    .health-info { flex:1; min-width:0; }
+    .health-dom { font-family:var(--mono); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+    .health-up  { font-size:11px; color:var(--text3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:1px; }
+
+    /* ── Table ───────────────────────────────────────────────── */
+    table { width:100%; border-collapse:collapse; }
+    thead th { padding:9px 18px; text-align:left; font-size:10px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:var(--text3); border-bottom:1px solid var(--border); white-space:nowrap; }
+    tbody td { padding:12px 18px; border-bottom:1px solid var(--border); vertical-align:middle; }
+    tbody tr:last-child td { border-bottom:none; }
+    tbody tr:hover td { background:rgba(128,128,160,.04); }
+    [data-theme="light"] tbody tr:hover td { background:rgba(80,80,120,.035); }
+    .row-off td { opacity:.45; }
+    .tm { font-family:var(--mono); font-size:12px; }
+    .t2 { color:var(--text2); }
+    .t3 { color:var(--text3); font-size:12px; }
+    .ttr { max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .empty-cell { padding:56px 20px !important; text-align:center; }
+    .empty-cell .ei { display:flex; align-items:center; justify-content:center; margin-bottom:14px; opacity:.18; }
+    .empty-cell .et { color:var(--text2); font-size:14px; font-weight:600; display:block; margin-bottom:5px; }
+    .empty-cell .es { color:var(--text3); font-size:12px; display:block; }
+
+    /* ── Route rows ──────────────────────────────────────────── */
+    .route-main { font-weight:600; color:var(--text); font-family:var(--mono); font-size:12.5px; }
+    .route-date { font-size:11px; color:var(--text3); margin-top:2px; }
+    .upstream-val { font-family:var(--mono); font-size:12px; color:var(--text2); }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:var(--r-sm); border:1px solid transparent; font-size:13px; font-weight:600; font-family:inherit; cursor:pointer; white-space:nowrap; outline:none; line-height:1.4; transition:opacity .14s, box-shadow .18s, background .14s, transform .1s, color .14s; }
+    .btn:active { transform:scale(.97); }
+    .btn svg { flex-shrink:0; }
+    .btn-primary { background:var(--blue); color:#fff; border-color:var(--blue2); box-shadow:0 1px 3px rgba(0,0,0,.2), inset 0 1px 0 rgba(255,255,255,.1); }
+    .btn-primary:hover { opacity:.9; box-shadow:0 0 0 3px var(--blue-glow), 0 2px 6px rgba(0,0,0,.2); }
+    .btn-ghost { background:transparent; color:var(--text2); border-color:var(--border); }
+    .btn-ghost:hover { background:var(--s2); color:var(--text); border-color:var(--border2); }
+    .btn-danger { background:transparent; color:var(--red); border-color:rgba(248,113,113,.3); }
+    .btn-danger:hover { background:var(--red-dim); }
+    .btn-cf { background:var(--orange2); color:#fff; border-color:var(--orange); box-shadow:0 1px 3px rgba(0,0,0,.2), inset 0 1px 0 rgba(255,255,255,.12); }
+    .btn-cf:hover { opacity:.9; box-shadow:0 0 0 3px var(--orange-glow), 0 2px 6px rgba(0,0,0,.2); }
+    .btn-sm  { padding:5px 11px; font-size:12px; gap:5px; }
+    .btn-icon{ padding:6px 7px; }
+    .btn:disabled { opacity:.38; pointer-events:none; }
+
+    /* ── Toggle ──────────────────────────────────────────────── */
+    .toggle { position:relative; display:inline-block; width:34px; height:18px; flex-shrink:0; }
+    .toggle input { opacity:0; width:0; height:0; position:absolute; }
+    .slider { position:absolute; inset:0; cursor:pointer; background:var(--border2); border-radius:18px; transition:background .2s, box-shadow .2s; }
+    .slider::before { content:''; position:absolute; height:12px; width:12px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:transform .2s; box-shadow:0 1px 3px rgba(0,0,0,.3); }
+    .toggle input:checked + .slider { background:var(--green); box-shadow:0 0 0 3px var(--green-dim); }
+    .toggle input:checked + .slider::before { transform:translateX(16px); }
+
+    /* ── Badges ──────────────────────────────────────────────── */
+    .badge { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:20px; font-size:10px; font-weight:700; white-space:nowrap; }
+    .b-blue   { background:var(--blue-dim);   color:var(--blue);   border:1px solid rgba(79,142,247,.2); }
+    .b-green  { background:var(--green-dim);  color:var(--green);  border:1px solid rgba(52,211,153,.2); }
+    .b-red    { background:var(--red-dim);    color:var(--red);    border:1px solid rgba(248,113,113,.2); }
+    .b-amber  { background:var(--amber-dim);  color:var(--amber);  border:1px solid rgba(251,191,36,.2); }
+    .b-orange { background:var(--orange-dim); color:var(--orange); border:1px solid rgba(249,115,22,.25); }
+    .b-purple { background:var(--purple-dim); color:var(--purple); border:1px solid rgba(192,132,252,.2); }
+    .b-muted  { background:rgba(90,90,114,.1); color:var(--text2); border:1px solid var(--border); }
+
+    /* ── Dots ────────────────────────────────────────────────── */
+    .dot { display:inline-block; width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+    .dot-green { background:var(--green); box-shadow:0 0 0 3px var(--green-dim); }
+    .dot-red   { background:var(--red);   box-shadow:0 0 0 3px var(--red-dim); }
+    .dot-muted { background:var(--border2); }
+
+    /* ── Slide Panel ─────────────────────────────────────────── */
+    .panel-wrap {
+      position: fixed; inset: 0; z-index: 200;
+      opacity: 0; pointer-events: none;
+      transition: opacity .22s ease;
+    }
+    .panel-wrap.open {
+      opacity: 1; pointer-events: auto;
+    }
+    .panel-backdrop {
+      position: absolute; inset: 0;
+      background: rgba(0,0,0,.6); backdrop-filter: blur(3px);
+    }
+    .panel {
+      position: absolute; top: 0; right: 0; bottom: 0;
+      width: 440px; max-width: 96vw;
+      background: var(--s1); border-left: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      transform: translateX(100%);
+      transition: transform .28s cubic-bezier(.16,1,.3,1);
+      box-shadow: -24px 0 64px rgba(0,0,0,.45);
+      z-index: 1;
+    }
+    [data-theme="light"] .panel { box-shadow: -12px 0 40px rgba(0,0,0,.14); }
+    .panel-wrap.open .panel { transform: none; }
+
+    .panel-head {
+      padding: 0 20px;
+      height: 56px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--s2); flex-shrink: 0;
+    }
+    .panel-head-left { display: flex; align-items: center; gap: 10px; }
+    .panel-head-icon {
+      width: 28px; height: 28px; border-radius: 7px;
+      background: var(--blue-dim); border: 1px solid rgba(79,142,247,.2);
+      display: flex; align-items: center; justify-content: center; color: var(--blue);
+    }
+    .panel-head h2 { font-size: 14px; font-weight: 700; }
+
+    .panel-body {
+      flex: 1; overflow-y: auto; padding: 24px 22px;
+      display: flex; flex-direction: column; gap: 0;
+    }
+
+    .panel-section { margin-bottom: 24px; }
+    .panel-section:last-child { margin-bottom: 0; }
+    .panel-section-title {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px;
+      color: var(--text3); margin-bottom: 10px;
+      padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    }
+
+    .panel-foot {
+      padding: 14px 22px;
+      border-top: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+      background: var(--s2); flex-shrink: 0;
+    }
+    .panel-foot-left { font-size: 11px; color: var(--text3); }
+
+    /* Form fields */
+    .field { display:flex; flex-direction:column; gap:5px; }
+    .field + .field { margin-top: 14px; }
+    .field label { font-size: 12px; font-weight: 600; color: var(--text2); display: flex; align-items: center; gap: 6px; }
+    .field-required { color: var(--red); font-size: 10px; }
+    .field input, .field select, .field textarea {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--r-sm); padding: 9px 12px;
+      color: var(--text); font-size: 13px; font-family: inherit;
+      outline: none; width: 100%;
+      transition: border-color .14s, box-shadow .14s;
+    }
+    .field input:focus, .field select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-dim); }
+    .field input::placeholder { color: var(--text3); font-size: 12px; }
+    .field input.err { border-color: var(--red); box-shadow: 0 0 0 3px var(--red-dim); }
+    .field select option { background: var(--s2); }
+    .hint { font-size: 11px; color: var(--text3); line-height: 1.4; }
+    .field-row { display: flex; gap: 12px; }
+    .field-row .field { flex: 1; }
+    .f-inline { display: flex; align-items: center; gap: 10px; }
+    .f-inline .flabel { font-size: 13px; color: var(--text); font-weight: 500; cursor: pointer; }
+    .f-inline .fsub { font-size: 11px; color: var(--text3); margin-top: 1px; }
+
+    /* Error message */
+    .form-err {
+      background: var(--red-dim); border: 1px solid rgba(248,113,113,.25);
+      border-radius: var(--r-sm); padding: 9px 12px;
+      font-size: 12px; color: var(--red);
+      display: none; align-items: center; gap: 7px;
+    }
+    .form-err.show { display: flex; }
+
+    /* ── Modal (for non-route dialogs) ───────────────────────── */
+    .ov { position:fixed; inset:0; background:rgba(0,0,0,.65); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:200; opacity:0; transition:opacity .18s; }
+    .ov.show { opacity:1; }
+    .modal { background:var(--s1); border:1px solid var(--border2); border-radius:14px; width:480px; max-width:95vw; max-height:90vh; display:flex; flex-direction:column; transform:translateY(12px) scale(.98); transition:transform .2s cubic-bezier(.16,1,.3,1); overflow:hidden; box-shadow:0 32px 64px rgba(0,0,0,.5); }
+    [data-theme="light"] .modal { box-shadow:0 16px 48px rgba(0,0,0,.14); }
+    .ov.show .modal { transform:none; }
+    .modal-head { padding:16px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; background:var(--s2); }
+    .modal-head h3 { font-size:14px; font-weight:700; }
+    .modal-body { padding:18px; display:flex; flex-direction:column; gap:14px; overflow-y:auto; }
+    .modal-foot { padding:12px 18px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:8px; background:var(--s2); }
+    .xbtn { background:none; border:none; cursor:pointer; color:var(--text3); padding:4px; border-radius:5px; display:flex; align-items:center; justify-content:center; transition:background .1s, color .1s; }
+    .xbtn:hover { background:var(--s3); color:var(--text); }
+
+    /* ── Code ────────────────────────────────────────────────── */
+    .code { background:var(--s2); border:1px solid var(--border); border-radius:var(--r-sm); padding:12px 14px; font-family:var(--mono); font-size:12px; color:var(--blue); overflow-x:auto; white-space:pre; cursor:pointer; transition:border-color .14s, box-shadow .14s; }
+    [data-theme="light"] .code { background:#eef2ff; color:#1e3a8a; border-color:#c7d2fe; }
+    .code:hover { border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-dim); }
+    .code.copied { color:var(--green); border-color:var(--green); box-shadow:0 0 0 2px var(--green-dim); }
+
+    /* ── Key row ─────────────────────────────────────────────── */
+    .key-row { display:flex; align-items:center; gap:10px; }
+    .key-lbl { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--text3); width:50px; flex-shrink:0; }
+    .key-val { font-family:var(--mono); font-size:11px; background:var(--s2); border:1px solid var(--border); border-radius:5px; padding:5px 9px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; transition:border-color .14s, box-shadow .14s; }
+    [data-theme="light"] .key-val { background:#eef2ff; }
+    .key-val:hover { border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-dim); }
+    .key-val.copied { color:var(--green); border-color:var(--green); box-shadow:0 0 0 2px var(--green-dim); }
+
+    /* ── Connect card ────────────────────────────────────────── */
+    .connect-card { background:var(--s1); border:1px solid var(--border); border-radius:var(--r); overflow:hidden; }
+    .connect-head { padding:14px 18px; display:flex; align-items:center; gap:12px; background:linear-gradient(135deg, rgba(192,132,252,.06), rgba(79,142,247,.06)); border-bottom:1px solid var(--border); }
+    .connect-icon { width:34px; height:34px; border-radius:9px; flex-shrink:0; background:var(--purple-dim); border:1px solid rgba(192,132,252,.25); display:flex; align-items:center; justify-content:center; color:var(--purple); }
+    .connect-title { font-size:13px; font-weight:700; }
+    .connect-sub   { font-size:11px; color:var(--text2); margin-top:1px; }
+    .connect-body  { padding:14px 18px; display:flex; flex-direction:column; gap:10px; }
+
+    /* ── Toast ───────────────────────────────────────────────── */
+    #toasts { position:fixed; top:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:999; pointer-events:none; }
+    .toast { background:var(--s2); border:1px solid var(--border2); border-radius:var(--r); padding:11px 14px; font-size:13px; font-weight:500; min-width:220px; max-width:340px; transform:translateX(calc(100% + 20px)); transition:transform .22s cubic-bezier(.16,1,.3,1); pointer-events:auto; display:flex; align-items:center; gap:10px; box-shadow:0 8px 24px rgba(0,0,0,.4); }
+    [data-theme="light"] .toast { box-shadow:0 4px 16px rgba(0,0,0,.1); }
+    .toast.in { transform:none; }
+    .toast-ok  { border-left:3px solid var(--green); }
+    .toast-err { border-left:3px solid var(--red); }
+    .toast-info{ border-left:3px solid var(--blue); }
+
+    /* ── Log viewer ──────────────────────────────────────────── */
+    .log-bar { padding:9px 16px; background:var(--s2); border-bottom:1px solid var(--border); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .log-search { background:var(--s1); border:1px solid var(--border); border-radius:var(--r-sm); padding:6px 10px; color:var(--text); font-size:12px; font-family:inherit; outline:none; width:200px; transition:border-color .14s, box-shadow .14s; }
+    .log-search:focus { border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-dim); }
+    .mini-sel { background:var(--s1); border:1px solid var(--border); border-radius:var(--r-sm); padding:6px 9px; color:var(--text); font-size:12px; outline:none; cursor:pointer; }
+    .lm { display:inline-block; width:52px; text-align:center; padding:2px 0; border-radius:4px; font-size:10px; font-weight:700; font-family:var(--mono); }
+    .lm-get    { background:var(--green-dim);  color:var(--green); }
+    .lm-post   { background:var(--blue-dim);   color:var(--blue); }
+    .lm-put    { background:var(--amber-dim);  color:var(--amber); }
+    .lm-delete { background:var(--red-dim);    color:var(--red); }
+    .lm-?      { background:rgba(90,90,114,.1); color:var(--text2); }
+    .rt { font-size:10px; font-weight:700; padding:2px 7px; border-radius:4px; }
+    .rt-proxy  { background:var(--green-dim);  color:var(--green); }
+    .rt-tunnel { background:var(--purple-dim); color:var(--purple); }
+    .rt-none   { background:var(--red-dim);    color:var(--red); }
+
+    /* ── Zone bar ────────────────────────────────────────────── */
+    .zone-bar { padding:11px 18px; background:var(--s2); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    .zone-bar label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--text3); }
+
+    /* ── Settings ────────────────────────────────────────────── */
+    .settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .settings-body { padding:18px; display:flex; flex-direction:column; gap:14px; }
+
+    /* ── Misc ────────────────────────────────────────────────── */
+    .flex { display:flex; align-items:center; gap:8px; }
+    .spin { animation:spin .7s linear infinite; display:inline-block; }
+    @keyframes spin { to{transform:rotate(360deg)} }
+    .cf-notice { padding:48px; text-align:center; color:var(--text3); line-height:1.8; }
+    .cf-notice strong { color:var(--orange); font-weight:700; }
+  </style>
+</head>
+<body>
+
+<!-- ── Topbar ───────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="tb-brand">
+    <div class="logo-icon">🔗</div>
+    <span class="logo-word">Seamless</span>
+  </div>
+  <nav class="tb-nav">
+    <div class="tb-item active" data-s="dashboard" onclick="nav('dashboard')">
+      <i data-lucide="layout-dashboard" width="13" height="13"></i> Dashboard
+    </div>
+    <div class="tb-item" data-s="proxy" onclick="nav('proxy')">
+      <i data-lucide="arrow-left-right" width="13" height="13"></i> Proxy Hosts
+    </div>
+    <div class="tb-item" data-s="tunnels" onclick="nav('tunnels')">
+      <i data-lucide="cable" width="13" height="13"></i> Tunnels
+    </div>
+    <div class="tb-item" data-s="logs" onclick="nav('logs')">
+      <i data-lucide="scroll-text" width="13" height="13"></i> Logs
+    </div>
+    <div class="tb-div"></div>
+    <div class="tb-item tb-cf" data-s="cf-tunnels" onclick="nav('cf-tunnels')">
+      <i data-lucide="cloud" width="13" height="13"></i> CF Tunnels
+    </div>
+    <div class="tb-item tb-cf" data-s="dns" onclick="nav('dns')">
+      <i data-lucide="globe" width="13" height="13"></i> DNS
+    </div>
+    <div class="tb-div"></div>
+    <div class="tb-item" data-s="settings" onclick="nav('settings')">
+      <i data-lucide="settings" width="13" height="13"></i> Settings
+    </div>
+  </nav>
+  <div class="tb-right">
+    <div class="status-pill"><div class="s-dot"></div> Live</div>
+    <button class="theme-btn" id="theme-btn" title="Switch theme">
+      <i data-lucide="sun" width="15" height="15"></i>
+    </button>
+  </div>
+</header>
+
+<!-- ── Route Slide Panel ─────────────────────────────────────── -->
+<div id="route-panel" class="panel-wrap">
+  <div class="panel-backdrop" id="panel-backdrop"></div>
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-head-left">
+        <div class="panel-head-icon"><i data-lucide="arrow-left-right" width="14" height="14"></i></div>
+        <h2 id="panel-title">Add Proxy Host</h2>
+      </div>
+      <button class="xbtn" id="panel-close" title="Close">
+        <i data-lucide="x" width="16" height="16"></i>
+      </button>
+    </div>
+    <div class="panel-body">
+      <div id="panel-err" class="form-err">
+        <i data-lucide="alert-circle" width="14" height="14"></i>
+        <span id="panel-err-text"></span>
+      </div>
+
+      <div class="panel-section">
+        <div class="panel-section-title">Routing</div>
+        <div class="field">
+          <label>Domain <span class="field-required">required</span></label>
+          <input id="panel-domain" type="text" placeholder="app.example.com" autocomplete="off" spellcheck="false">
+          <span class="hint">The public hostname that will be matched against incoming HTTP Host headers</span>
+        </div>
+        <div class="field">
+          <label>Upstream URL <span class="field-required">required</span></label>
+          <input id="panel-upstream" type="text" placeholder="http://127.0.0.1:3000" autocomplete="off" spellcheck="false">
+          <span class="hint">TCP target — supports http://, https://, or bare host:port</span>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="panel-section-title">Options</div>
+        <div class="f-inline">
+          <label class="toggle">
+            <input type="checkbox" id="panel-enabled" checked>
+            <span class="slider"></span>
+          </label>
+          <div>
+            <div class="flabel" id="panel-enabled-lbl" onclick="document.getElementById('panel-enabled').click()">Enable route</div>
+            <div class="fsub">Disabled routes are skipped during ingress matching</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="panel-foot">
+      <span class="panel-foot-left" id="panel-hint"></span>
+      <div class="flex">
+        <button class="btn btn-ghost" id="panel-cancel">Cancel</button>
+        <button class="btn btn-primary" id="panel-save">
+          <i data-lucide="plus" width="13" height="13" id="panel-save-icon"></i>
+          <span id="panel-save-text">Add Host</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<main class="main">
+
+  <!-- ── Dashboard ──────────────────────────────────────────── -->
+  <div id="sec-dashboard" class="section active">
+    <div class="hero">
+      <div class="hero-left">
+        <div class="hero-badge"><i data-lucide="activity" width="10" height="10"></i> Live</div>
+        <div class="hero-title">Dashboard</div>
+        <div class="hero-sub">Real-time overview of your proxy and tunnel status</div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn btn-ghost btn-sm" onclick="loadDashboard()">
+          <i data-lucide="refresh-cw" width="13" height="13"></i> Refresh
+        </button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="stats-grid">
+        <div class="stat stat-blue">
+          <div class="stat-head"><div class="stat-ic"><i data-lucide="arrow-left-right" width="14" height="14"></i></div></div>
+          <div class="stat-num" id="d-routes">—</div>
+          <div class="stat-label">Proxy Hosts</div>
+          <div class="stat-sub" id="d-routes-sub">loading…</div>
+        </div>
+        <div class="stat stat-green">
+          <div class="stat-head"><div class="stat-ic"><i data-lucide="heart-pulse" width="14" height="14"></i></div></div>
+          <div class="stat-num" id="d-up">—</div>
+          <div class="stat-label">Healthy</div>
+          <div class="stat-sub">reachable upstreams</div>
+        </div>
+        <div class="stat stat-purple">
+          <div class="stat-head"><div class="stat-ic"><i data-lucide="cable" width="14" height="14"></i></div></div>
+          <div class="stat-num" id="d-tunnels">—</div>
+          <div class="stat-label">Seamless Tunnels</div>
+          <div class="stat-sub" id="d-tunnels-sub">active connections</div>
+        </div>
+        <div class="stat stat-orange">
+          <div class="stat-head"><div class="stat-ic"><i data-lucide="zap" width="14" height="14"></i></div></div>
+          <div class="stat-num" id="d-reqs">—</div>
+          <div class="stat-label">Requests</div>
+          <div class="stat-sub">logged this session</div>
+        </div>
+      </div>
+      <div class="dash-grid2">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><i data-lucide="activity" width="11" height="11"></i> Recent Requests</span>
+            <button class="btn btn-ghost btn-sm" onclick="nav('logs')">View all →</button>
+          </div>
+          <div style="overflow-x:auto">
+            <table>
+              <thead><tr>
+                <th style="width:82px">Time</th><th style="width:60px">Method</th>
+                <th>Host</th><th>Path</th>
+                <th style="width:96px">Route</th><th style="width:56px">Status</th>
+              </tr></thead>
+              <tbody id="d-log-body"><tr><td colspan="6" class="empty-cell">
+                <div class="ei"><i data-lucide="inbox" width="34" height="34"></i></div>
+                <span class="et">No requests yet</span>
+                <span class="es">Traffic appears here as it flows through the ingress</span>
+              </td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><i data-lucide="heart-pulse" width="11" height="11"></i> Health</span>
+            <span style="font-size:11px;color:var(--text3)" id="d-health-ts"></span>
+          </div>
+          <div id="d-health-list">
+            <div class="health-item"><span class="t3">Loading…</span></div>
+          </div>
+          <div style="padding:9px 18px;border-top:1px solid var(--border);display:flex;justify-content:flex-end">
+            <button class="btn btn-ghost btn-sm" onclick="loadDashboard()">
+              <i data-lucide="activity" width="12" height="12"></i> Recheck
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Proxy Hosts ─────────────────────────────────────────── -->
+  <div id="sec-proxy" class="section">
+    <div class="hero">
+      <div class="hero-left">
+        <div class="hero-badge"><i data-lucide="arrow-left-right" width="10" height="10"></i> Routing</div>
+        <div class="hero-title">Proxy Hosts</div>
+        <div class="hero-sub">Route domains to upstream services over raw TCP</div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn btn-ghost btn-sm" onclick="checkHealth()" id="health-btn">
+          <i data-lucide="activity" width="13" height="13"></i> Health Check
+        </button>
+        <button class="btn btn-primary" id="add-route-btn">
+          <i data-lucide="plus" width="14" height="14"></i> Add Host
+        </button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title" id="routes-count-title"><i data-lucide="server" width="11" height="11"></i> Routes</span>
+          <div class="flex">
+            <input type="text" id="route-search" placeholder="Filter…" style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 10px;font-size:12px;color:var(--text);outline:none;width:140px;font-family:inherit" oninput="filterRoutes()">
+          </div>
+        </div>
+        <table>
+          <thead><tr>
+            <th style="width:28px"></th>
+            <th style="width:44px"></th>
+            <th>Domain</th>
+            <th>Upstream</th>
+            <th style="width:100px">Created</th>
+            <th style="width:76px"></th>
+          </tr></thead>
+          <tbody id="routes-body"><tr><td colspan="6" class="empty-cell">
+            <div class="ei"><i data-lucide="arrow-left-right" width="34" height="34"></i></div>
+            <span class="et">No proxy hosts yet</span>
+            <span class="es">Add a host to start routing traffic to an upstream service</span>
+          </td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Seamless Tunnels ──────────────────────────────────── -->
+  <div id="sec-tunnels" class="section">
+    <div class="hero tunnel-hero">
+      <div class="hero-left">
+        <div class="hero-badge"><i data-lucide="shield" width="10" height="10"></i> Post-Quantum</div>
+        <div class="hero-title">Seamless Tunnels</div>
+        <div class="hero-sub">Active connections secured with X25519 + Kyber768 hybrid KEM</div>
+      </div>
+      <div class="hero-actions">
+        <span style="font-size:11px;color:var(--text3)">Auto-refreshes every 5s</span>
+      </div>
+    </div>
+    <div class="content">
+      <div class="connect-card">
+        <div class="connect-head">
+          <div class="connect-icon"><i data-lucide="terminal" width="16" height="16"></i></div>
+          <div>
+            <div class="connect-title">Quick Connect</div>
+            <div class="connect-sub">Copy and run to open a tunnel to this relay</div>
+          </div>
+        </div>
+        <div class="connect-body">
+          <div class="key-row">
+            <span class="key-lbl">X25519</span>
+            <span class="key-val tm" id="ki-x25519" onclick="copyEl(this)" title="Click to copy">—</span>
+          </div>
+          <div class="key-row">
+            <span class="key-lbl">KEM</span>
+            <span class="key-val tm" id="ki-kem" onclick="copyEl(this)" title="Click to copy">—</span>
+          </div>
+          <div class="code" id="ki-cmd" onclick="copyEl(this)" title="Click to copy">Loading…</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title"><i data-lucide="cable" width="11" height="11"></i> Active Tunnels</span></div>
+        <table>
+          <thead><tr><th>Public URL</th><th style="width:80px">Type</th></tr></thead>
+          <tbody id="seamless-tunnels-body"><tr><td colspan="2" class="empty-cell">
+            <div class="ei"><i data-lucide="cable" width="34" height="34"></i></div>
+            <span class="et">No active tunnels</span>
+            <span class="es">Connect a Seamless client using the command above</span>
+          </td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Logs ────────────────────────────────────────────────── -->
+  <div id="sec-logs" class="section">
+    <div class="hero log-hero">
+      <div class="hero-left">
+        <div class="hero-badge"><i data-lucide="zap" width="10" height="10"></i> Ingress</div>
+        <div class="hero-title">Access Logs</div>
+        <div class="hero-sub">Last 500 requests through the HTTP ingress</div>
+      </div>
+      <div class="hero-actions">
+        <label class="f-inline" style="gap:8px">
+          <label class="toggle"><input type="checkbox" id="log-auto" checked onchange="toggleLogAuto()"><span class="slider"></span></label>
+          <span style="font-size:12px;color:var(--text2);font-weight:500">Live</span>
+        </label>
+      </div>
+    </div>
+    <div class="content">
+      <div class="card">
+        <div class="log-bar">
+          <input class="log-search" id="log-filter" placeholder="Filter by host or path…" oninput="renderLogs()">
+          <select class="mini-sel" id="log-sf" onchange="renderLogs()">
+            <option value="">All requests</option>
+            <option value="ok">Routed</option>
+            <option value="502">502 errors</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="loadLogs()"><i data-lucide="refresh-cw" width="12" height="12"></i></button>
+          <span style="margin-left:auto;font-size:11px;color:var(--text3)" id="log-count"></span>
+        </div>
+        <div style="overflow-x:auto;max-height:calc(100vh - 260px);overflow-y:auto">
+          <table>
+            <thead style="position:sticky;top:0;z-index:1;background:var(--s2)"><tr>
+              <th style="width:82px">Time</th><th style="width:60px">Method</th>
+              <th style="width:170px">Host</th><th>Path</th>
+              <th style="width:100px">Route</th><th style="width:56px">Status</th>
+            </tr></thead>
+            <tbody id="log-body"><tr><td colspan="6" class="empty-cell">
+              <div class="ei"><i data-lucide="scroll-text" width="34" height="34"></i></div>
+              <span class="et">No requests logged yet</span>
+              <span class="es">Send traffic through the ingress to see logs appear here</span>
+            </td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CF Tunnels ──────────────────────────────────────────── -->
+  <div id="sec-cf-tunnels" class="section">
+    <div class="hero cf-hero">
+      <div class="hero-left">
+        <div class="hero-badge"><i data-lucide="cloud" width="10" height="10"></i> Cloudflare</div>
+        <div class="hero-title">CF Tunnels</div>
+        <div class="hero-sub">Create and manage Cloudflare Zero Trust tunnels</div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn btn-cf" onclick="openCreateCfTunnel()">
+          <i data-lucide="plus" width="14" height="14"></i> New Tunnel
+        </button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="card">
+        <table>
+          <thead><tr>
+            <th style="width:26px"></th><th>Name</th><th>Tunnel ID</th>
+            <th>Connections</th><th style="width:90px">Created</th><th style="width:130px"></th>
+          </tr></thead>
+          <tbody id="cf-tunnels-body"><tr><td colspan="6" class="empty-cell">
+            <div class="ei"><i data-lucide="cloud" width="34" height="34"></i></div>
+            <span class="et">No tunnels yet</span>
+            <span class="es">Create a Cloudflare tunnel to expose services without opening ports</span>
+          </td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── DNS ─────────────────────────────────────────────────── -->
+  <div id="sec-dns" class="section">
+    <div class="hero cf-hero">
+      <div class="hero-left">
+        <div class="hero-badge"><i data-lucide="globe" width="10" height="10"></i> Cloudflare DNS</div>
+        <div class="hero-title">DNS Manager</div>
+        <div class="hero-sub">Manage DNS records across your Cloudflare zones</div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn btn-cf" onclick="openAddDns()" id="add-dns-btn" disabled>
+          <i data-lucide="plus" width="14" height="14"></i> Add Record
+        </button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="card">
+        <div class="zone-bar">
+          <label>Zone</label>
+          <select class="mini-sel" id="zone-select" onchange="onZoneChange()" style="min-width:200px">
+            <option value="">— Select a zone —</option>
+          </select>
+          <span style="font-size:11px;color:var(--text3)" id="dns-count"></span>
+        </div>
+        <table>
+          <thead><tr>
+            <th style="width:70px">Type</th><th>Name</th><th>Content</th>
+            <th style="width:90px">Proxy</th><th style="width:70px">TTL</th><th style="width:70px"></th>
+          </tr></thead>
+          <tbody id="dns-body"><tr><td colspan="6" class="empty-cell">
+            <div class="ei"><i data-lucide="globe" width="34" height="34"></i></div>
+            <span class="et">Select a zone</span>
+            <span class="es">Choose a Cloudflare zone from the dropdown above</span>
+          </td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Settings ────────────────────────────────────────────── -->
+  <div id="sec-settings" class="section">
+    <div class="hero">
+      <div class="hero-left">
+        <div class="hero-badge"><i data-lucide="settings" width="10" height="10"></i> System</div>
+        <div class="hero-title">Settings</div>
+        <div class="hero-sub">Cloudflare credentials and relay identity</div>
+      </div>
+    </div>
+    <div class="content">
+      <div class="settings-grid">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><i data-lucide="key" width="11" height="11"></i> Cloudflare API</span>
+            <span class="badge b-orange">Stored server-side</span>
+          </div>
+          <div class="settings-body">
+            <div class="field">
+              <label>API Token</label>
+              <input id="s-token" type="password" placeholder="Paste your Cloudflare API token…" autocomplete="off">
+              <span class="hint">Needs Zone:Read, DNS:Edit, Tunnel:Edit permissions</span>
+            </div>
+            <div class="field">
+              <label>Account ID</label>
+              <input id="s-account" type="text" placeholder="32-character hex account ID" autocomplete="off">
+              <span class="hint">Found in the Cloudflare dashboard sidebar</span>
+            </div>
+            <button class="btn btn-cf" onclick="saveSettings()">
+              <i data-lucide="save" width="14" height="14"></i> Save Credentials
+            </button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><i data-lucide="shield" width="11" height="11"></i> Relay Identity</span>
+            <span class="badge b-purple">Post-Quantum</span>
+          </div>
+          <div class="settings-body">
+            <div class="key-row"><span class="key-lbl">X25519</span><span class="key-val tm" id="s-x25519" onclick="copyEl(this)" title="Click to copy">—</span></div>
+            <div class="key-row"><span class="key-lbl">KEM</span><span class="key-val tm" id="s-kem" onclick="copyEl(this)" title="Click to copy">—</span></div>
+            <div class="code" id="s-cmd" onclick="copyEl(this)" title="Click to copy">Loading…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+<div id="toasts"></div>
+
+<script>
+'use strict';
+let curSection = 'dashboard';
+let routeMap = new Map(), dnsMap = new Map(), cfTunnelMap = new Map();
+let selectedZoneId = null, allLogs = [], healthCache = {}, logTimer = null;
+let editingRouteId = null;
+
+// ── Theme ──────────────────────────────────────────────────────
+function updateThemeIcon() {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const btn = document.getElementById('theme-btn');
+  if (!btn) return;
+  btn.innerHTML = dark
+    ? '<i data-lucide="sun" width="15" height="15"></i>'
+    : '<i data-lucide="moon" width="15" height="15"></i>';
+  lucide.createIcons();
+}
+
+document.getElementById('theme-btn').addEventListener('click', function() {
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('seamless-theme', next);
+  updateThemeIcon();
+});
+
+// ── Navigation ─────────────────────────────────────────────────
+function nav(s) {
+  curSection = s;
+  document.querySelectorAll('.tb-item').forEach(function(el) {
+    el.classList.toggle('active', el.getAttribute('data-s') === s);
+  });
+  document.querySelectorAll('.section').forEach(function(el) {
+    el.classList.toggle('active', el.id === 'sec-' + s);
+  });
+  if (s === 'dashboard')  loadDashboard();
+  if (s === 'logs')       loadLogs();
+  if (s === 'proxy')      loadRoutes();
+  if (s === 'tunnels')    { loadSeamlessTunnels(); loadStatus(); }
+  if (s === 'cf-tunnels') loadCfTunnels();
+  if (s === 'dns')        loadZones();
+  if (s === 'settings')   { loadSettings(); loadStatus(); }
+}
+
+// ── API ─────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  var opts = { method: method, headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  var r = await fetch('/api' + path, opts);
+  if (r.status === 204) return null;
+  var text = await r.text();
+  if (!text) return null;
+  var data = JSON.parse(text);
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+// ── Toast ───────────────────────────────────────────────────────
+function toast(msg, type) {
+  type = type || 'ok';
+  var el = document.createElement('div');
+  el.className = 'toast toast-' + type;
+  var icons = { ok: '✓', err: '✕', info: 'ℹ' };
+  el.innerHTML = '<span style="font-size:14px;flex-shrink:0">' + (icons[type] || 'ℹ') + '</span><span>' + esc(msg) + '</span>';
+  document.getElementById('toasts').appendChild(el);
+  requestAnimationFrame(function() { el.classList.add('in'); });
+  setTimeout(function() { el.classList.remove('in'); setTimeout(function() { el.remove(); }, 280); }, 3500);
+}
+
+// ── Helpers ─────────────────────────────────────────────────────
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function fmtDate(ts) { return new Date(ts*1000).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
+function fmtDateStr(s) { return s ? new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}) : '—'; }
+function fmtTime(ts) { return new Date(ts*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+
+function copyEl(el) {
+  navigator.clipboard.writeText(el.textContent).then(function() {
+    el.classList.add('copied');
+    setTimeout(function() { el.classList.remove('copied'); }, 1400);
+  });
+}
+function copyText(t, l) { navigator.clipboard.writeText(t).then(function() { toast((l||'Copied') + ' to clipboard'); }); }
+function methodCls(m) { return ({GET:'lm-get',POST:'lm-post',PUT:'lm-put',DELETE:'lm-delete'})[m ? m.toUpperCase() : ''] || 'lm-?'; }
+
+function routeTag(r) {
+  if (r.indexOf('proxy:')  === 0) return '<span class="rt rt-proxy">proxy</span>';
+  if (r.indexOf('tunnel:') === 0) return '<span class="rt rt-tunnel">tunnel</span>';
+  return '<span class="rt rt-none">none</span>';
+}
+function statusCell(s) {
+  if (s === 0)   return '<span style="color:var(--text3)">—</span>';
+  if (s === 502) return '<span style="color:var(--red);font-weight:700">502</span>';
+  return '<span>' + s + '</span>';
+}
+function logRowHtml(e) {
+  var p = e.path.length > 44 ? e.path.slice(0,44)+'…' : e.path;
+  return '<tr><td class="tm t3">' + fmtTime(e.ts) + '</td><td><span class="lm ' + methodCls(e.method) + '">' + esc(e.method) + '</span></td><td class="tm ttr t2" style="max-width:170px" title="' + esc(e.host) + '">' + esc(e.host) + '</td><td class="tm t3" style="font-size:11px;max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(e.path) + '">' + esc(p) + '</td><td>' + routeTag(e.routed_to) + '</td><td>' + statusCell(e.status) + '</td></tr>';
+}
+
+// ── Slide Panel (Route) ─────────────────────────────────────────
+function openRoutePanel(route) {
+  editingRouteId = route ? route.id : null;
+  var isEdit = !!route;
+
+  document.getElementById('panel-title').textContent = isEdit ? 'Edit Proxy Host' : 'Add Proxy Host';
+  document.getElementById('panel-domain').value = route ? route.domain : '';
+  document.getElementById('panel-upstream').value = route ? route.upstream_url : '';
+  document.getElementById('panel-enabled').checked = route ? route.enabled : true;
+  document.getElementById('panel-save-text').textContent = isEdit ? 'Save Changes' : 'Add Host';
+  document.getElementById('panel-hint').textContent = isEdit ? 'Editing ' + route.domain : '';
+
+  var icon = document.getElementById('panel-save-icon');
+  icon.setAttribute('data-lucide', isEdit ? 'check' : 'plus');
+  lucide.createIcons();
+
+  hideErr();
+  document.getElementById('panel-domain').classList.remove('err');
+  document.getElementById('panel-upstream').classList.remove('err');
+
+  document.getElementById('route-panel').classList.add('open');
+  setTimeout(function() { document.getElementById('panel-domain').focus(); }, 80);
+}
+
+function closeRoutePanel() {
+  document.getElementById('route-panel').classList.remove('open');
+  editingRouteId = null;
+}
+
+function showErr(msg) {
+  var el = document.getElementById('panel-err');
+  document.getElementById('panel-err-text').textContent = msg;
+  el.classList.add('show');
+}
+function hideErr() {
+  document.getElementById('panel-err').classList.remove('show');
+}
+
+async function saveRoute() {
+  var domain = document.getElementById('panel-domain').value.trim();
+  var upstream_url = document.getElementById('panel-upstream').value.trim();
+  var enabled = document.getElementById('panel-enabled').checked;
+  var btn = document.getElementById('panel-save');
+
+  hideErr();
+  document.getElementById('panel-domain').classList.remove('err');
+  document.getElementById('panel-upstream').classList.remove('err');
+
+  if (!domain) {
+    document.getElementById('panel-domain').classList.add('err');
+    document.getElementById('panel-domain').focus();
+    showErr('Domain is required');
+    return;
+  }
+  if (!upstream_url) {
+    document.getElementById('panel-upstream').classList.add('err');
+    document.getElementById('panel-upstream').focus();
+    showErr('Upstream URL is required');
+    return;
+  }
+
+  btn.disabled = true;
+  document.getElementById('panel-save-text').textContent = editingRouteId ? 'Saving…' : 'Adding…';
+
+  try {
+    if (editingRouteId) {
+      await api('PUT', '/routes/' + editingRouteId, { domain: domain, upstream_url: upstream_url, enabled: enabled });
+      toast('Proxy host updated');
+    } else {
+      await api('POST', '/routes', { domain: domain, upstream_url: upstream_url, enabled: enabled });
+      toast('Proxy host added');
+    }
+    closeRoutePanel();
+    loadRoutes();
+  } catch(e) {
+    showErr(e.message);
+    btn.disabled = false;
+    document.getElementById('panel-save-text').textContent = editingRouteId ? 'Save Changes' : 'Add Host';
+  }
+}
+
+// Wire up panel buttons
+document.getElementById('add-route-btn').addEventListener('click', function() { openRoutePanel(null); });
+document.getElementById('panel-close').addEventListener('click', closeRoutePanel);
+document.getElementById('panel-cancel').addEventListener('click', closeRoutePanel);
+document.getElementById('panel-backdrop').addEventListener('click', closeRoutePanel);
+document.getElementById('panel-save').addEventListener('click', saveRoute);
+
+// Enter key in form fields
+document.getElementById('panel-domain').addEventListener('keydown', function(e) { if (e.key === 'Enter') document.getElementById('panel-upstream').focus(); });
+document.getElementById('panel-upstream').addEventListener('keydown', function(e) { if (e.key === 'Enter') saveRoute(); });
+
+// Escape closes panel
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && document.getElementById('route-panel').classList.contains('open')) closeRoutePanel();
+});
+
+// ── Dashboard ───────────────────────────────────────────────────
+async function loadDashboard() {
+  try {
+    var results = await Promise.all([api('GET','/routes'), api('GET','/tunnels'), api('GET','/logs')]);
+    var routes = results[0], tunnels = results[1], logs = results[2];
+    document.getElementById('d-routes').textContent = routes.length;
+    document.getElementById('d-routes-sub').textContent = routes.filter(function(r){return r.enabled;}).length + ' enabled';
+    var tot = tunnels.http.length + tunnels.tcp.length;
+    document.getElementById('d-tunnels').textContent = tot;
+    document.getElementById('d-tunnels-sub').textContent = tunnels.http.length+' HTTP · '+tunnels.tcp.length+' TCP';
+    document.getElementById('d-reqs').textContent = logs.length;
+    var lb = document.getElementById('d-log-body');
+    lb.innerHTML = logs.slice(0,8).map(logRowHtml).join('') || '<tr><td colspan="6" class="empty-cell"><div class="ei"><i data-lucide="inbox" width="28" height="28"></i></div><span class="et">No requests yet</span></td></tr>';
+    lucide.createIcons();
+    loadDashboardHealth(routes);
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+async function loadDashboardHealth(routes) {
+  var hl = document.getElementById('d-health-list');
+  if (!routes.length) {
+    hl.innerHTML = '<div class="health-item"><span class="t3">No proxy hosts configured</span></div>';
+    document.getElementById('d-up').textContent = '0';
+    return;
+  }
+  hl.innerHTML = routes.map(function(r) {
+    return '<div class="health-item" id="dhr-'+r.id+'"><span class="dot dot-muted" id="dh-'+r.id+'"></span><div class="health-info"><div class="health-dom">'+esc(r.domain)+'</div><div class="health-up">'+esc(r.upstream_url)+'</div></div><span id="dhs-'+r.id+'" style="color:var(--text3);font-size:11px">…</span></div>';
+  }).join('');
+  try {
+    var h = await api('GET','/routes/health');
+    var up = 0;
+    routes.forEach(function(r) {
+      var st = h[r.id] || 'unknown';
+      if (st === 'up') up++;
+      var dot = document.getElementById('dh-'+r.id);
+      var badge = document.getElementById('dhs-'+r.id);
+      if (dot) dot.className = 'dot ' + (st === 'up' ? 'dot-green' : 'dot-red');
+      if (badge) badge.outerHTML = st === 'up' ? '<span class="badge b-green">Up</span>' : '<span class="badge b-red">Down</span>';
+    });
+    document.getElementById('d-up').textContent = up;
+    document.getElementById('d-health-ts').textContent = 'at ' + new Date().toLocaleTimeString();
+  } catch(e) {}
+}
+
+// ── Logs ────────────────────────────────────────────────────────
+async function loadLogs() {
+  try { allLogs = await api('GET','/logs'); renderLogs(); } catch(e) {}
+}
+function renderLogs() {
+  var f = document.getElementById('log-filter').value.toLowerCase();
+  var sf = document.getElementById('log-sf').value;
+  var rows = allLogs;
+  if (f)  rows = rows.filter(function(e){return e.host.toLowerCase().indexOf(f)>=0 || e.path.toLowerCase().indexOf(f)>=0;});
+  if (sf === 'ok')  rows = rows.filter(function(e){return e.status!==502;});
+  if (sf === '502') rows = rows.filter(function(e){return e.status===502;});
+  document.getElementById('log-count').textContent = rows.length + ' entries';
+  document.getElementById('log-body').innerHTML = rows.length ? rows.map(logRowHtml).join('') : '<tr><td colspan="6" class="empty-cell"><span class="t3">No matching requests</span></td></tr>';
+}
+function toggleLogAuto() {
+  var on = document.getElementById('log-auto').checked;
+  if (!on && logTimer) { clearInterval(logTimer); logTimer = null; }
+}
+
+// ── Proxy Routes ────────────────────────────────────────────────
+async function loadRoutes() {
+  try {
+    var r = await api('GET','/routes');
+    routeMap = new Map(r.map(function(x){return [x.id, x];}));
+    renderRoutes(r);
+    var title = document.getElementById('routes-count-title');
+    if (title) title.innerHTML = '<i data-lucide="server" width="11" height="11"></i> ' + r.length + ' Route' + (r.length !== 1 ? 's' : '');
+    lucide.createIcons();
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+function filterRoutes() {
+  var q = document.getElementById('route-search').value.toLowerCase();
+  var routes = [...routeMap.values()];
+  if (q) routes = routes.filter(function(r) { return r.domain.toLowerCase().indexOf(q) >= 0 || r.upstream_url.toLowerCase().indexOf(q) >= 0; });
+  renderRoutes(routes);
+}
+
+function renderRoutes(routes) {
+  var tb = document.getElementById('routes-body');
+  if (!routes.length) {
+    var isEmpty = routeMap.size === 0;
+    tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><div class="ei"><i data-lucide="arrow-left-right" width="34" height="34"></i></div><span class="et">' + (isEmpty ? 'No proxy hosts yet' : 'No matching routes') + '</span><span class="es">' + (isEmpty ? 'Click "Add Host" to create your first proxy route' : 'Try a different search term') + '</span></td></tr>';
+    lucide.createIcons();
+    return;
+  }
+  tb.innerHTML = routes.map(function(r) {
+    var h = healthCache[r.id];
+    var dc = h === 'up' ? 'dot-green' : h === 'down' ? 'dot-red' : 'dot-muted';
+    return '<tr class="' + (!r.enabled ? 'row-off' : '') + '" id="row-'+r.id+'">'
+      + '<td><span class="dot '+dc+'" title="'+(h||'unknown')+'"></span></td>'
+      + '<td><label class="toggle"><input type="checkbox" '+(r.enabled?'checked':'')+' data-id="'+esc(r.id)+'" class="route-toggle"><span class="slider"></span></label></td>'
+      + '<td><div class="route-main">'+esc(r.domain)+'</div><div class="route-date">Added '+fmtDate(r.created_at)+'</div></td>'
+      + '<td><span style="color:var(--text3);margin-right:5px">→</span><span class="upstream-val" title="'+esc(r.upstream_url)+'">'+esc(r.upstream_url)+'</span></td>'
+      + '<td style="text-align:right"><span class="badge '+(r.enabled?'b-green':'b-muted')+'">'+(r.enabled?'Active':'Disabled')+'</span></td>'
+      + '<td><div class="flex"><button class="btn btn-ghost btn-sm btn-icon" data-edit="'+esc(r.id)+'" title="Edit"><i data-lucide="pencil" width="12" height="12"></i></button><button class="btn btn-danger btn-sm btn-icon" data-del="'+esc(r.id)+'" title="Delete"><i data-lucide="trash-2" width="12" height="12"></i></button></div></td>'
+      + '</tr>';
+  }).join('');
+  lucide.createIcons();
+
+  // Wire up row buttons via event delegation on tbody
+  tb.addEventListener('click', routeTableHandler, { once: true });
+  tb.addEventListener('change', routeToggleHandler, { once: true });
+}
+
+function routeTableHandler(e) {
+  var editBtn = e.target.closest('[data-edit]');
+  var delBtn  = e.target.closest('[data-del]');
+  if (editBtn) {
+    var id = editBtn.getAttribute('data-edit');
+    var route = routeMap.get(id);
+    if (route) openRoutePanel(route);
+  }
+  if (delBtn) {
+    var id = delBtn.getAttribute('data-del');
+    deleteRoute(id);
+  }
+}
+
+function routeToggleHandler(e) {
+  if (e.target.classList.contains('route-toggle')) {
+    toggleRoute(e.target.getAttribute('data-id'), e.target.checked);
+  }
+}
+
+async function checkHealth() {
+  var btn = document.getElementById('health-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">↻</span> Checking…';
+  try {
+    healthCache = await api('GET','/routes/health');
+    renderRoutes([...routeMap.values()]);
+    var up = Object.values(healthCache).filter(function(v){return v==='up';}).length;
+    toast(up + '/' + Object.keys(healthCache).length + ' upstreams reachable');
+  } catch(e) { toast(e.message, 'err'); }
+  btn.disabled = false;
+  btn.innerHTML = '<i data-lucide="activity" width="13" height="13"></i> Health Check';
+  lucide.createIcons();
+}
+
+async function toggleRoute(id, enabled) {
+  var r = routeMap.get(id);
+  if (!r) return;
+  try { await api('PUT', '/routes/'+id, { domain:r.domain, upstream_url:r.upstream_url, enabled:enabled }); loadRoutes(); }
+  catch(e) { toast(e.message, 'err'); loadRoutes(); }
+}
+
+async function deleteRoute(id) {
+  var r = routeMap.get(id);
+  if (!confirm('Delete "' + (r ? r.domain : id) + '"? This cannot be undone.')) return;
+  try { await api('DELETE', '/routes/'+id); toast('Proxy host deleted'); loadRoutes(); }
+  catch(e) { toast(e.message, 'err'); }
+}
+
+// ── Seamless Tunnels ─────────────────────────────────────────────
+async function loadSeamlessTunnels() {
+  try {
+    var d = await api('GET','/tunnels');
+    var rows = d.http.map(function(t){return {url:t.url,kind:'HTTP'};}).concat(d.tcp.map(function(t){return {url:t.url,kind:'TCP'};}));
+    var tb = document.getElementById('seamless-tunnels-body');
+    tb.innerHTML = rows.length
+      ? rows.map(function(t){return '<tr><td class="tm">'+esc(t.url)+'</td><td><span class="badge '+(t.kind==='HTTP'?'b-green':'b-blue')+'">'+t.kind+'</span></td></tr>';}).join('')
+      : '<tr><td colspan="2" class="empty-cell"><div class="ei"><i data-lucide="cable" width="34" height="34"></i></div><span class="et">No active tunnels</span><span class="es">Connect a Seamless client using the command above</span></td></tr>';
+    lucide.createIcons();
+  } catch(e) {}
+}
+
+async function loadStatus() {
+  try {
+    var s = await api('GET','/status');
+    var cmd = 'seamless http <port> \\\n  --relay '+s.apex_addr+' \\\n  --x25519 '+s.x25519_pubkey+' \\\n  --kem    '+s.kem_pubkey;
+    ['ki-x25519','s-x25519'].forEach(function(id){var el=document.getElementById(id);if(el)el.textContent=s.x25519_pubkey;});
+    ['ki-kem','s-kem'].forEach(function(id){var el=document.getElementById(id);if(el)el.textContent=s.kem_pubkey;});
+    ['ki-cmd','s-cmd'].forEach(function(id){var el=document.getElementById(id);if(el)el.textContent=cmd;});
+  } catch(e) {}
+}
+
+// ── CF Tunnels ──────────────────────────────────────────────────
+async function loadCfTunnels() {
+  var tb = document.getElementById('cf-tunnels-body');
+  try {
+    var tunnels = await api('GET','/cf/tunnels');
+    cfTunnelMap.clear();
+    tunnels.forEach(function(t){cfTunnelMap.set(t.id,t);});
+    if (!tunnels.length) {
+      tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><div class="ei"><i data-lucide="cloud" width="34" height="34"></i></div><span class="et">No tunnels yet</span><span class="es">Create a Cloudflare tunnel to expose services without opening firewall ports</span></td></tr>';
+      lucide.createIcons();
+      return;
+    }
+    tb.innerHTML = tunnels.map(function(t) {
+      var active = t.status === 'active' || (t.connections && t.connections.length > 0);
+      var conns = (t.connections || []).filter(function(c){return !c.is_pending_reconnect;}).length;
+      var colos = [...new Set((t.connections||[]).map(function(c){return c.colo_name;}).filter(Boolean))].join(', ');
+      return '<tr><td><span class="dot '+(active?'dot-green':'dot-muted')+'"></span></td><td><strong>'+esc(t.name)+'</strong></td><td class="tm t2" style="font-size:11px">'+t.id.slice(0,8)+'… <button class="btn btn-ghost btn-sm btn-icon" onclick="copyText(\''+esc(t.id)+'\',\'Tunnel ID\')" title="Copy"><i data-lucide="copy" width="11" height="11"></i></button></td><td>'+(conns>0?'<span class="badge b-green">'+conns+' conn'+(conns!==1?'s':'')+'</span> <span style="font-size:11px;color:var(--text3)">'+colos+'</span>':'<span style="color:var(--text3)">—</span>')+'</td><td class="t3">'+fmtDateStr(t.created_at)+'</td><td><div class="flex"><button class="btn btn-ghost btn-sm" onclick="showTunnelToken(\''+esc(t.id)+'\',\''+esc(t.name)+'\')">Token</button><button class="btn btn-danger btn-sm btn-icon" onclick="deleteCfTunnel(\''+esc(t.id)+'\',\''+esc(t.name)+'\')"><i data-lucide="trash-2" width="12" height="12"></i></button></div></td></tr>';
+    }).join('');
+    lucide.createIcons();
+  } catch(e) {
+    tb.innerHTML = e.message.indexOf('credentials not configured') >= 0
+      ? '<tr><td colspan="6" class="cf-notice">Configure <strong>Cloudflare credentials</strong> in Settings to manage tunnels</td></tr>'
+      : '<tr><td colspan="6" class="empty-cell"><span class="t2" style="color:var(--red)">'+esc(e.message)+'</span></td></tr>';
+  }
+}
+
+function openCreateCfTunnel() {
+  var ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.innerHTML = '<div class="modal"><div class="modal-head"><h3>Create Cloudflare Tunnel</h3><button class="xbtn" onclick="this.closest(\'.ov\').remove()"><i data-lucide="x" width="14" height="14"></i></button></div><div class="modal-body"><div class="field"><label>Tunnel Name</label><input id="ftn" type="text" placeholder="e.g. seamless-prod"><span class="hint">Shown in the Cloudflare dashboard</span></div></div><div class="modal-foot"><button class="btn btn-ghost" onclick="this.closest(\'.ov\').remove()">Cancel</button><button class="btn btn-cf" id="cfmok"><i data-lucide="plus" width="13" height="13"></i> Create</button></div></div>';
+  document.body.appendChild(ov);
+  requestAnimationFrame(function(){ ov.classList.add('show'); });
+  lucide.createIcons();
+  setTimeout(function(){ ov.querySelector('#ftn').focus(); }, 60);
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  ov.querySelector('#cfmok').addEventListener('click', async function() {
+    var name = ov.querySelector('#ftn').value.trim();
+    if (!name) return toast('Name required','err');
+    this.disabled = true; this.textContent = 'Creating…';
+    try { var t = await api('POST','/cf/tunnels',{name:name}); ov.remove(); toast('Tunnel "'+t.name+'" created'); loadCfTunnels(); }
+    catch(e) { toast(e.message,'err'); this.disabled=false; this.innerHTML='<i data-lucide="plus" width="13" height="13"></i> Create'; lucide.createIcons(); }
+  });
+}
+
+async function showTunnelToken(id, name) {
+  var ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.innerHTML = '<div class="modal"><div class="modal-head"><h3>Token — '+esc(name)+'</h3><button class="xbtn" onclick="this.closest(\'.ov\').remove()"><i data-lucide="x" width="14" height="14"></i></button></div><div class="modal-body" id="tbody"><div style="text-align:center;padding:24px;color:var(--text3)">↻ Fetching…</div></div><div class="modal-foot"><button class="btn btn-ghost" onclick="this.closest(\'.ov\').remove()">Close</button></div></div>';
+  document.body.appendChild(ov);
+  requestAnimationFrame(function(){ ov.classList.add('show'); });
+  lucide.createIcons();
+  ov.addEventListener('click', function(e){ if(e.target===ov) ov.remove(); });
+  try {
+    var d = await api('GET','/cf/tunnels/'+id+'/token');
+    ov.querySelector('#tbody').innerHTML = '<div class="field"><label>cloudflared</label><div class="code" onclick="copyEl(this)" title="Click to copy">cloudflared tunnel run --token '+esc(d.token)+'</div></div><div class="field"><label>Docker</label><div class="code" onclick="copyEl(this)" title="Click to copy">docker run cloudflare/cloudflared:latest tunnel run --token '+esc(d.token)+'</div></div><div class="field"><label>Raw Token</label><div class="code" onclick="copyEl(this)" style="word-break:break-all;white-space:pre-wrap" title="Click to copy">'+esc(d.token)+'</div></div>';
+  } catch(e) { ov.querySelector('#tbody').innerHTML = '<p style="color:var(--red)">'+esc(e.message)+'</p>'; }
+}
+
+async function deleteCfTunnel(id, name) {
+  if (!confirm('Delete tunnel "'+name+'"? This cannot be undone.')) return;
+  try { await api('DELETE','/cf/tunnels/'+id); toast('Tunnel "'+name+'" deleted'); loadCfTunnels(); }
+  catch(e) { toast(e.message,'err'); }
+}
+
+// ── DNS ─────────────────────────────────────────────────────────
+async function loadZones() {
+  try {
+    var zones = await api('GET','/cf/zones');
+    var sel = document.getElementById('zone-select');
+    sel.innerHTML = '<option value="">— Select a zone —</option>' + zones.map(function(z){return '<option value="'+esc(z.id)+'">'+esc(z.name)+'</option>';}).join('');
+    if (selectedZoneId) { sel.value = selectedZoneId; loadDnsRecords(selectedZoneId); }
+  } catch(e) {
+    if (e.message.indexOf('credentials not configured') >= 0)
+      document.getElementById('dns-body').innerHTML = '<tr><td colspan="6" class="cf-notice">Configure <strong>Cloudflare credentials</strong> in Settings to manage DNS</td></tr>';
+    else toast(e.message,'err');
+  }
+}
+
+function onZoneChange() {
+  selectedZoneId = document.getElementById('zone-select').value || null;
+  document.getElementById('add-dns-btn').disabled = !selectedZoneId;
+  if (selectedZoneId) loadDnsRecords(selectedZoneId);
+  else { document.getElementById('dns-body').innerHTML = '<tr><td colspan="6" class="empty-cell"><div class="ei"><i data-lucide="globe" width="28" height="28"></i></div><span class="et">Select a zone</span></td></tr>'; lucide.createIcons(); document.getElementById('dns-count').textContent=''; }
+}
+
+async function loadDnsRecords(zoneId) {
+  var tb = document.getElementById('dns-body');
+  tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><span class="spin">↻</span></td></tr>';
+  try {
+    var recs = await api('GET','/cf/dns/'+zoneId);
+    dnsMap.clear();
+    recs.forEach(function(r){dnsMap.set(r.id,r);});
+    document.getElementById('dns-count').textContent = recs.length + ' record' + (recs.length!==1?'s':'');
+    tb.innerHTML = recs.length ? recs.map(function(r){
+      return '<tr><td><span class="badge '+dnsBadge(r.record_type)+'">'+esc(r.record_type)+'</span></td><td class="tm ttr" title="'+esc(r.name)+'">'+esc(r.name)+'</td><td class="tm ttr t2" title="'+esc(r.content)+'">'+esc(r.content)+'</td><td>'+(r.proxied?'<span class="badge b-orange">Proxied</span>':'<span class="badge b-muted">DNS only</span>')+'</td><td class="t3">'+(r.ttl===1?'Auto':r.ttl+'s')+'</td><td><div class="flex"><button class="btn btn-ghost btn-sm btn-icon" onclick="editDns(\''+esc(r.id)+'\')" title="Edit"><i data-lucide="pencil" width="12" height="12"></i></button><button class="btn btn-danger btn-sm btn-icon" onclick="deleteDns(\''+esc(r.id)+'\')" title="Delete"><i data-lucide="trash-2" width="12" height="12"></i></button></div></td></tr>';
+    }).join('') : '<tr><td colspan="6" class="empty-cell"><span class="t3">No records in this zone</span></td></tr>';
+    lucide.createIcons();
+  } catch(e) { toast(e.message,'err'); }
+}
+
+function dnsBadge(t) { return ({A:'b-blue',AAAA:'b-blue',CNAME:'b-green',MX:'b-amber',TXT:'b-muted',NS:'b-muted'})[t]||'b-muted'; }
+
+var DNS_TYPES = ['A','AAAA','CNAME','MX','TXT','NS','SRV','CAA','PTR'];
+function dnsFormHtml(r) {
+  return '<div class="field-row"><div class="field" style="flex:0 0 100px"><label>Type</label><select id="ftype">'+DNS_TYPES.map(function(t){return '<option'+(r&&r.record_type===t?' selected':'')+'>'+t+'</option>';}).join('')+'</select></div><div class="field"><label>Name</label><input id="fname" type="text" value="'+(r?esc(r.name):'')+'" placeholder="@ or subdomain"></div></div><div class="field"><label>Content</label><input id="fcontent" type="text" value="'+(r?esc(r.content):'')+'" placeholder="IP, hostname, or value"></div><div class="field-row"><div class="field"><label>TTL</label><select id="fttl"><option value="1"'+(r&&r.ttl===1?' selected':'')+'>Auto</option><option value="60"'+(r&&r.ttl===60?' selected':'')+'>1 min</option><option value="300"'+(r&&r.ttl===300?' selected':'')+'>5 min</option><option value="3600"'+(r&&r.ttl===3600?' selected':'')+'>1 hr</option></select></div><div class="field"><label>Proxied</label><div class="f-inline" style="padding-top:6px"><label class="toggle"><input type="checkbox" id="fproxied"'+(r&&r.proxied?' checked':'')+' style="position:absolute"><span class="slider"></span></label><span class="flabel" style="font-size:12px;color:var(--text2)">Enable CF proxy</span></div></div></div>';
+}
+
+function openDnsModal(title, r, onSave) {
+  var ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.innerHTML = '<div class="modal"><div class="modal-head"><h3>'+title+'</h3><button class="xbtn" onclick="this.closest(\'.ov\').remove()"><i data-lucide="x" width="14" height="14"></i></button></div><div class="modal-body">'+dnsFormHtml(r)+'</div><div class="modal-foot"><button class="btn btn-ghost" onclick="this.closest(\'.ov\').remove()">Cancel</button><button class="btn btn-cf" id="dnsmok">Save</button></div></div>';
+  document.body.appendChild(ov);
+  requestAnimationFrame(function(){ ov.classList.add('show'); });
+  lucide.createIcons();
+  setTimeout(function(){ ov.querySelector('input,select') && ov.querySelector('input,select').focus(); }, 60);
+  ov.addEventListener('click', function(e){ if(e.target===ov) ov.remove(); });
+  ov.querySelector('#dnsmok').addEventListener('click', function() { onSave(ov); });
+}
+
+function openAddDns() {
+  if (!selectedZoneId) return;
+  openDnsModal('Add DNS Record', null, async function(ov) {
+    var body = { record_type:ov.querySelector('#ftype').value, name:ov.querySelector('#fname').value.trim(), content:ov.querySelector('#fcontent').value.trim(), ttl:parseInt(ov.querySelector('#fttl').value), proxied:ov.querySelector('#fproxied').checked };
+    if (!body.name||!body.content) return toast('Name and content required','err');
+    try { await api('POST','/cf/dns/'+selectedZoneId,body); ov.remove(); toast('DNS record created'); loadDnsRecords(selectedZoneId); }
+    catch(e) { toast(e.message,'err'); }
+  });
+}
+
+function editDns(id) {
+  var r = dnsMap.get(id); if (!r) return;
+  openDnsModal('Edit DNS Record', r, async function(ov) {
+    var body = { record_type:ov.querySelector('#ftype').value, name:ov.querySelector('#fname').value.trim(), content:ov.querySelector('#fcontent').value.trim(), ttl:parseInt(ov.querySelector('#fttl').value), proxied:ov.querySelector('#fproxied').checked };
+    try { await api('PUT','/cf/dns/'+selectedZoneId+'/'+id,body); ov.remove(); toast('DNS record updated'); loadDnsRecords(selectedZoneId); }
+    catch(e) { toast(e.message,'err'); }
+  });
+}
+
+async function deleteDns(id) {
+  var r = dnsMap.get(id);
+  if (!confirm('Delete "' + (r ? r.name : id) + '"?')) return;
+  try { await api('DELETE','/cf/dns/'+selectedZoneId+'/'+id); toast('Record deleted'); loadDnsRecords(selectedZoneId); }
+  catch(e) { toast(e.message,'err'); }
+}
+
+// ── Settings ────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    var s = await api('GET','/settings');
+    if (s.cf_api_token_set) document.getElementById('s-token').placeholder = 'Current: '+s.cf_api_token_masked+' (leave blank to keep)';
+    document.getElementById('s-account').value = s.cf_account_id || '';
+  } catch(e) {}
+}
+
+async function saveSettings() {
+  var token = document.getElementById('s-token').value;
+  var account = document.getElementById('s-account').value.trim();
+  try {
+    await api('PUT','/settings',{cf_api_token:token||null,cf_account_id:account});
+    toast('Settings saved');
+    document.getElementById('s-token').value = '';
+    loadSettings();
+  } catch(e) { toast(e.message,'err'); }
+}
+
+// ── Boot ────────────────────────────────────────────────────────
+lucide.createIcons();
+updateThemeIcon();
+loadDashboard();
+setInterval(function() {
+  if (curSection === 'logs' && document.getElementById('log-auto').checked) loadLogs();
+  if (curSection === 'tunnels') loadSeamlessTunnels();
+  if (curSection === 'dashboard') loadDashboard();
+}, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Seamless
+        uses: actions/checkout@v4
+        with:
+          path: Seamless
+
+      - name: Checkout Seam
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/Seam
+          path: Seam
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Seamless/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Seamless/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Rustfmt
+        working-directory: Seamless
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        working-directory: Seamless
+        run: cargo clippy -p seamless-common -p seamless-relay -p seamless-client --all-targets -- -D warnings
+
+      - name: Build
+        working-directory: Seamless
+        run: cargo build --workspace --all-targets --release
+
+      - name: Test
+        working-directory: Seamless
+        run: cargo test --workspace
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Seamless
+        uses: actions/checkout@v4
+        with:
+          path: Seamless
+
+      - name: Checkout Seam
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/Seam
+          path: Seam
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-audit-${{ runner.os }}
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit
+        working-directory: Seamless
+        run: cargo audit
+        continue-on-error: true

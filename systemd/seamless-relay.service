@@ -1,0 +1,32 @@
+[Unit]
+Description=Seamless post-quantum reverse tunnel relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seamless
+Group=seamless
+EnvironmentFile=-/etc/seamless/relay.env
+ExecStart=/usr/local/bin/seamless-relay --apex-addr 0.0.0.0:4443 --http-addr 0.0.0.0:8080 $SEAMLESS_RELAY_ARGS
+Restart=on-failure
+RestartSec=2
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/seamless
+
+[Install]
+WantedBy=multi-user.target
