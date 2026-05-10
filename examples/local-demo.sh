@@ -15,7 +15,7 @@ if ! command -v cargo >/dev/null 2>&1; then
     fi
 fi
 
-APEX_ADDR=127.0.0.1:14443
+SEAM_ADDR=127.0.0.1:14443
 HTTP_ADDR=127.0.0.1:18080
 ORIGIN_PORT=13000
 SUBDOMAIN=demo
@@ -45,8 +45,8 @@ python3 -m http.server "$ORIGIN_PORT" --bind 127.0.0.1 --directory "$ORIGIN_DIR"
     > "$ORIGIN_LOG" 2>&1 &
 PIDS+=($!)
 
-echo "==> Starting relay on $APEX_ADDR / $HTTP_ADDR"
-./target/release/seamless-relay --apex-addr "$APEX_ADDR" --http-addr "$HTTP_ADDR" \
+echo "==> Starting relay on $SEAM_ADDR / $HTTP_ADDR"
+./target/release/seamless-relay --apex-addr "$SEAM_ADDR" --http-addr "$HTTP_ADDR" \
     > "$RELAY_LOG" 2>&1 &
 PIDS+=($!)
 
@@ -64,7 +64,7 @@ if [[ -z "${X25519:-}" || -z "${KEM:-}" ]]; then
 fi
 
 echo "==> Starting client (subdomain $SUBDOMAIN → 127.0.0.1:$ORIGIN_PORT)"
-./target/release/seamless --relay "$APEX_ADDR" --x25519 "$X25519" --kem "$KEM" \
+./target/release/seamless --relay "$SEAM_ADDR" --x25519 "$X25519" --kem "$KEM" \
     http "$ORIGIN_PORT" --subdomain "$SUBDOMAIN" \
     > "$CLIENT_LOG" 2>&1 &
 PIDS+=($!)

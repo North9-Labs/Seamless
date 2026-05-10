@@ -31,7 +31,7 @@ pub struct AppState {
     pub tcp_ports: TcpPortSet,
     pub base_domain: Arc<String>,
     pub relay_pubkeys: Arc<RelayPubkeys>,
-    pub apex_addr: String,
+    pub seam_addr: String,
     pub http_port: u16,
     pub auth: AuthPolicy,
     pub http_client: reqwest::Client,
@@ -48,7 +48,7 @@ pub struct RelayPubkeys {
 struct Args {
     /// UDP address for Seam connections from tunnel clients.
     #[arg(long, default_value = "0.0.0.0:4443")]
-    apex_addr: SocketAddr,
+    seam_addr: SocketAddr,
 
     /// TCP address for public HTTP ingress.
     #[arg(long, default_value = "0.0.0.0:8080")]
@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
     info!("  seam-pubkey-kem    {}", kem_pk_hex);
     info!(
         "connect: seamless http <port> --relay {} --x25519 {} --kem {}",
-        args.apex_addr, x25519_pk_hex, kem_pk_hex
+        args.seam_addr, x25519_pk_hex, kem_pk_hex
     );
 
     let auth = match &args.auth_file {
@@ -123,7 +123,7 @@ async fn main() -> Result<()> {
             x25519: x25519_pk_hex,
             kem: kem_pk_hex,
         }),
-        apex_addr: args.apex_addr.to_string(),
+        seam_addr: args.seam_addr.to_string(),
         http_port: args.http_addr.port(),
         auth,
         http_client: reqwest::Client::new(),
@@ -147,10 +147,10 @@ async fn main() -> Result<()> {
     });
 
     // Seam server accept loop.
-    let mut server = Server::bind(args.apex_addr, identity)
+    let mut server = Server::bind(args.seam_addr, identity)
         .await
         .map_err(|e| anyhow!("seam bind failed: {e}"))?;
-    info!("seam server listening on udp://{}", args.apex_addr);
+    info!("seam server listening on udp://{}", args.seam_addr);
 
     while let Some(conn) = server.accept().await {
         let remote = conn.remote_addr().await;

@@ -8,7 +8,7 @@ Type=simple
 User=seamless
 Group=seamless
 EnvironmentFile=-/etc/seamless/relay.env
-ExecStart=/usr/local/bin/seamless-relay --apex-addr 0.0.0.0:4443 --http-addr 0.0.0.0:8080 $SEAMLESS_RELAY_ARGS
+ExecStart=/usr/local/bin/seamless-relay --seam-addr 0.0.0.0:4443 --http-addr 0.0.0.0:8080 $SEAMLESS_RELAY_ARGS
 Restart=on-failure
 RestartSec=2
 

@@ -47,7 +47,7 @@ cargo build --release
 
 ```bash
 ./target/release/seamless-relay \
-  --apex-addr 0.0.0.0:4443 \
+  --seam-addr 0.0.0.0:4443 \
   --http-addr 0.0.0.0:80
 
 # On startup it prints its public keys — copy them:

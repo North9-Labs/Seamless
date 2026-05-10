@@ -213,7 +213,7 @@ async fn list_seamless_tunnels(State(s): State<Arc<AppState>>) -> Json<serde_jso
 
 async fn get_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
-        "apex_addr": s.apex_addr,
+        "seam_addr": s.seam_addr,
         "x25519_pubkey": s.relay_pubkeys.x25519,
         "kem_pubkey": s.relay_pubkeys.kem,
         "base_domain": s.base_domain.as_ref(),

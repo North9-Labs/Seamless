@@ -66,7 +66,7 @@ async fn route_http(mut tcp: TcpStream, peer: SocketAddr, state: AppState) -> Re
         return Ok(());
     }
 
-    // 2. Check tunnel registry (Apex-backed subdomains).
+    // 2. Check tunnel registry (Seam-backed subdomains).
     let sub = extract_subdomain(&host, &state.base_domain);
     if let Some(sub) = sub {
         let mux = {

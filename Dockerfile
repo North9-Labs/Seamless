@@ -35,4 +35,4 @@ USER 65532:65532
 EXPOSE 4443/udp 8080/tcp
 
 ENTRYPOINT ["/usr/local/bin/seamless-relay"]
-CMD ["--apex-addr", "0.0.0.0:4443", "--http-addr", "0.0.0.0:8080"]
+CMD ["--seam-addr", "0.0.0.0:4443", "--http-addr", "0.0.0.0:8080"]
