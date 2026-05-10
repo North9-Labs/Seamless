@@ -1,3 +1,6 @@
+// Copyright (c) 2025 North9 LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Shared types for the Seamless reverse-tunnel wire protocol.
 //!
 //! Every Seam connection between client and relay begins with the client

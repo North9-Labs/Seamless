@@ -185,4 +185,9 @@ The relay exposes an admin panel at `:8088` (default). Features:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Seamless is dual-licensed:
+
+- **Open source:** [GNU Affero General Public License v3.0](LICENSE) — free for open source projects and personal use
+- **Commercial:** contact [licensing@north9.org](mailto:licensing@north9.org) for proprietary, government, SaaS tunnel hosting, or OEM use
+
+See [LICENSE-COMMERCIAL](LICENSE-COMMERCIAL) for details.
