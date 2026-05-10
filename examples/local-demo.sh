@@ -46,7 +46,7 @@ python3 -m http.server "$ORIGIN_PORT" --bind 127.0.0.1 --directory "$ORIGIN_DIR"
 PIDS+=($!)
 
 echo "==> Starting relay on $SEAM_ADDR / $HTTP_ADDR"
-./target/release/seamless-relay --apex-addr "$SEAM_ADDR" --http-addr "$HTTP_ADDR" \
+./target/release/seamless-relay --seam-addr "$SEAM_ADDR" --http-addr "$HTTP_ADDR" \
     > "$RELAY_LOG" 2>&1 &
 PIDS+=($!)
 

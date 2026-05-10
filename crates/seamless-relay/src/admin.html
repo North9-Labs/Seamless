@@ -1177,9 +1177,14 @@ function renderRoutes(routes) {
   }).join('');
   lucide.createIcons();
 
-  // Wire up row buttons via event delegation on tbody
-  tb.addEventListener('click', routeTableHandler, { once: true });
-  tb.addEventListener('change', routeToggleHandler, { once: true });
+  // Wire up row buttons via event delegation on tbody.
+  // Remove any previously registered handlers first to prevent accumulation.
+  if (tb._rlClick) tb.removeEventListener('click', tb._rlClick);
+  if (tb._rlChange) tb.removeEventListener('change', tb._rlChange);
+  tb._rlClick = routeTableHandler;
+  tb._rlChange = routeToggleHandler;
+  tb.addEventListener('click', routeTableHandler);
+  tb.addEventListener('change', routeToggleHandler);
 }
 
 function routeTableHandler(e) {
@@ -1247,7 +1252,7 @@ async function loadSeamlessTunnels() {
 async function loadStatus() {
   try {
     var s = await api('GET','/status');
-    var cmd = 'seamless http <port> \\\n  --relay '+s.apex_addr+' \\\n  --x25519 '+s.x25519_pubkey+' \\\n  --kem    '+s.kem_pubkey;
+    var cmd = 'seamless http <port> \\\n  --relay '+s.seam_addr+' \\\n  --x25519 '+s.x25519_pubkey+' \\\n  --kem    '+s.kem_pubkey;
     ['ki-x25519','s-x25519'].forEach(function(id){var el=document.getElementById(id);if(el)el.textContent=s.x25519_pubkey;});
     ['ki-kem','s-kem'].forEach(function(id){var el=document.getElementById(id);if(el)el.textContent=s.kem_pubkey;});
     ['ki-cmd','s-cmd'].forEach(function(id){var el=document.getElementById(id);if(el)el.textContent=cmd;});
