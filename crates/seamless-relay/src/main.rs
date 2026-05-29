@@ -5,10 +5,9 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use seam_protocol::api::Server;
-use seam_protocol::handshake::IdentityKeypair;
+use seam_protocol::handshake::{IdentityKeypair, pk_to_bytes};
 use seam_protocol::tunnel::SeamMux;
 use clap::Parser;
-use pqcrypto_traits::kem::{PublicKey as _, SecretKey as _};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -69,18 +68,23 @@ struct Args {
     /// Path to the JSON store file (proxy routes + relay identity).
     #[arg(long, default_value = "seamless-relay.json")]
     store: String,
+
+    /// Log level: error, warn, info, debug, trace (overrides RUST_LOG).
+    #[arg(long, default_value = "info")]
+    log_level: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,seamless_relay=debug".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                format!("{},seamless_relay=debug", args.log_level).into()
+            }),
         )
         .init();
-
-    let args = Args::parse();
 
     let store_path = Arc::new(PathBuf::from(&args.store));
     let store = store::load(&store_path).await?;
@@ -88,7 +92,7 @@ async fn main() -> Result<()> {
     let identity = load_or_create_identity(&store, &store_path).await?;
 
     let x25519_pk_hex = hex::encode(identity.x25519_public.as_bytes());
-    let kem_pk_hex = hex::encode(identity.kem_pk.as_bytes());
+    let kem_pk_hex = hex::encode(pk_to_bytes(&identity.kem_pk));
 
     info!("relay identity loaded (persistent)");
     info!("  seam-pubkey-x25519 {}", x25519_pk_hex);
@@ -180,48 +184,20 @@ async fn load_or_create_identity(
     store: &SharedStore,
     store_path: &Arc<PathBuf>,
 ) -> Result<IdentityKeypair> {
-    // Try to load all three components from the store.
-    let saved = {
-        let s = store.read().await;
-        match (
-            s.identity_x25519_hex.clone(),
-            s.identity_kem_pk_hex.clone(),
-            s.identity_kem_sk_hex.clone(),
-        ) {
-            (Some(a), Some(b), Some(c)) => Some((a, b, c)),
-            _ => None,
-        }
-    };
+    // Try loading from the compact identity blob (v0.2+).
+    let saved_hex = store.read().await.identity_hex.clone();
 
-    if let Some((x25519_hex, kem_pk_hex, kem_sk_hex)) = saved {
-        let x25519_bytes: [u8; 32] = hex::decode(&x25519_hex)
-            .map_err(|_| anyhow!("invalid x25519 secret in store"))?
-            .try_into()
-            .map_err(|_| anyhow!("x25519 secret wrong length"))?;
-        let kem_pk_bytes = hex::decode(&kem_pk_hex)
-            .map_err(|_| anyhow!("invalid kem pubkey hex in store"))?;
-        let kem_sk_bytes = hex::decode(&kem_sk_hex)
-            .map_err(|_| anyhow!("invalid kem secret hex in store"))?;
-
-        let x25519_secret = x25519_dalek::StaticSecret::from(x25519_bytes);
-        let x25519_public = x25519_dalek::PublicKey::from(&x25519_secret);
-        let kem_pk = pqcrypto_kyber::kyber768::PublicKey::from_bytes(&kem_pk_bytes)
-            .map_err(|_| anyhow!("invalid kyber768 public key in store"))?;
-        let kem_sk = pqcrypto_kyber::kyber768::SecretKey::from_bytes(&kem_sk_bytes)
-            .map_err(|_| anyhow!("invalid kyber768 secret key in store"))?;
-
+    if let Some(hex) = saved_hex {
+        let bytes = hex::decode(&hex).map_err(|_| anyhow!("invalid identity hex in store"))?;
+        let identity = IdentityKeypair::from_bytes(&bytes)
+            .ok_or_else(|| anyhow!("corrupt identity in store — delete seamless-relay.json to regenerate"))?;
         info!("loaded persistent relay identity from store");
-        return Ok(IdentityKeypair { x25519_secret, x25519_public, kem_pk, kem_sk });
+        return Ok(identity);
     }
 
     // Generate a fresh identity and persist it.
     let identity = IdentityKeypair::generate();
-    {
-        let mut s = store.write().await;
-        s.identity_x25519_hex = Some(hex::encode(identity.x25519_secret.to_bytes()));
-        s.identity_kem_pk_hex = Some(hex::encode(identity.kem_pk.as_bytes()));
-        s.identity_kem_sk_hex = Some(hex::encode(identity.kem_sk.as_bytes()));
-    }
+    store.write().await.identity_hex = Some(hex::encode(identity.to_bytes()));
     store::save(store, store_path).await?;
     info!("generated and saved new relay identity");
     Ok(identity)

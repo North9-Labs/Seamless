@@ -33,8 +33,14 @@ pub struct Store {
     #[serde(default)]
     pub routes: Vec<ProxyRoute>,
     pub cf: Option<CfSettings>,
+    /// Compact serialised identity (IdentityKeypair::to_bytes(), hex-encoded). v0.2+
+    pub identity_hex: Option<String>,
+    /// Legacy fields — kept for JSON forward-compat; ignored on load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_x25519_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_kem_pk_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_kem_sk_hex: Option<String>,
 }
 

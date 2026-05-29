@@ -4,10 +4,9 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use seamless_common::{read_frame, write_frame, ControlFrame, TunnelKind, PROTOCOL_VERSION};
 use seam_protocol::api::Client;
-use seam_protocol::handshake::IdentityKeypair;
+use seam_protocol::handshake::{IdentityKeypair, KemPublicKey, pk_from_bytes};
 use seam_protocol::tunnel::{SeamMux, SeamStream};
 use clap::{Parser, Subcommand};
-use pqcrypto_kyber::kyber768;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tracing::{info, warn};
@@ -34,6 +33,10 @@ struct Args {
     /// Max reconnect attempts after the session drops (0 = infinite).
     #[arg(long, default_value_t = 0)]
     max_retries: u32,
+
+    /// Log level: error, warn, info, debug, trace (overrides RUST_LOG).
+    #[arg(long, default_value = "info")]
+    log_level: String,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -78,14 +81,15 @@ impl Cmd {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,seamless_client=debug".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                format!("{},seamless_client=debug", args.log_level).into()
+            }),
         )
         .init();
-
-    let args = Args::parse();
     let x25519_pk = parse_x25519(&args.x25519)?;
     let kem_pk = parse_kem(&args.kem)?;
 
@@ -134,7 +138,7 @@ async fn main() -> Result<()> {
 async fn run_session(
     relay: SocketAddr,
     x25519_pk: &[u8; 32],
-    kem_pk: &kyber768::PublicKey,
+    kem_pk: &KemPublicKey,
     token: Option<String>,
     kind: TunnelKind,
     local_target: String,
@@ -239,8 +243,7 @@ fn parse_x25519(s: &str) -> Result<[u8; 32]> {
         .map_err(|_| anyhow!("x25519 must be 32 bytes, got {}", bytes.len()))
 }
 
-fn parse_kem(s: &str) -> Result<kyber768::PublicKey> {
-    let bytes = hex::decode(s.trim()).context("kem not hex")?;
-    use pqcrypto_traits::kem::PublicKey;
-    kyber768::PublicKey::from_bytes(&bytes).map_err(|_| anyhow!("invalid kyber768 public key"))
+fn parse_kem(s: &str) -> Result<KemPublicKey> {
+    let bytes = hex::decode(s.trim()).context("kem key not hex")?;
+    pk_from_bytes(&bytes).ok_or_else(|| anyhow!("invalid ML-KEM-768 public key ({} bytes)", bytes.len()))
 }

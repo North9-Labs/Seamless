@@ -138,7 +138,11 @@ async fn serve_http(
     subdomain: Option<String>,
 ) -> Result<()> {
     let sub = subdomain.unwrap_or_else(random_subdomain);
-    let url = format!("http://{sub}.{base_domain}:{http_port}");
+    let url = if http_port == 80 {
+        format!("http://{sub}.{base_domain}")
+    } else {
+        format!("http://{sub}.{base_domain}:{http_port}")
+    };
 
     {
         let mut t = tunnels.lock().await;
@@ -219,18 +223,20 @@ async fn serve_tcp(
 async fn bind_random_port(in_use: &TcpPortSet) -> Result<(TcpListener, u16)> {
     for _ in 0..50 {
         let port: u16 = rand::thread_rng().gen_range(10_000..60_000);
+
+        // Check our in-use set without holding the lock across the async bind.
         {
-            let mut set = in_use.lock().await;
-            if set.contains(&port) {
+            if in_use.lock().await.contains(&port) {
                 continue;
             }
-            match TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port))).await {
-                Ok(l) => {
-                    set.insert(port);
-                    return Ok((l, port));
-                }
-                Err(_) => continue,
+        }
+
+        match TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], port))).await {
+            Ok(l) => {
+                in_use.lock().await.insert(port);
+                return Ok((l, port));
             }
+            Err(_) => continue,
         }
     }
     bail!("could not find a free port in 10000..60000 after 50 tries")
@@ -276,6 +282,25 @@ pub async fn forward_to_tunnel(
 }
 
 pub fn random_subdomain() -> String {
-    let n: u32 = rand::thread_rng().gen_range(0x1000_0000..0xFFFF_FFFF);
-    format!("t{n:x}")
+    const ADJECTIVES: &[&str] = &[
+        "bold", "calm", "cold", "dark", "deep", "dim", "dry", "dull", "fair",
+        "fast", "flat", "free", "full", "glad", "gray", "hard", "high", "keen",
+        "kind", "late", "lean", "long", "loud", "low", "mild", "neat", "new",
+        "odd", "open", "pale", "pure", "quick", "rare", "rich", "safe", "sharp",
+        "slim", "slow", "soft", "still", "strong", "tall", "thin", "tidy",
+        "true", "vast", "warm", "wild", "wise",
+    ];
+    const NOUNS: &[&str] = &[
+        "arc", "ash", "bay", "beam", "bolt", "brook", "cave", "cliff", "cloud",
+        "crest", "dale", "dawn", "dew", "drift", "dusk", "dust", "fern", "field",
+        "flame", "flint", "fog", "ford", "frost", "gale", "gate", "glen", "grove",
+        "haze", "hill", "lake", "leaf", "mist", "moon", "moss", "oak", "peak",
+        "pine", "pond", "rain", "reef", "ridge", "river", "rock", "sand", "sea",
+        "sky", "snow", "star", "stone", "stream", "tide", "vale", "wave", "wind",
+    ];
+    let mut rng = rand::thread_rng();
+    let adj = ADJECTIVES[rng.gen_range(0..ADJECTIVES.len())];
+    let noun = NOUNS[rng.gen_range(0..NOUNS.len())];
+    let n: u16 = rng.gen_range(10..100);
+    format!("{adj}-{noun}-{n}")
 }

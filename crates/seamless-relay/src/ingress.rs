@@ -27,14 +27,27 @@ pub async fn run_http_ingress(addr: SocketAddr, state: AppState) -> Result<()> {
 async fn route_http(mut tcp: TcpStream, peer: SocketAddr, state: AppState) -> Result<()> {
     let mut head = Vec::with_capacity(4096);
     let mut buf = [0u8; 4096];
-    let n = tcp.read(&mut buf).await?;
-    if n == 0 {
-        return Ok(());
+
+    // Read until we have the full HTTP header block (ends with \r\n\r\n).
+    // Cap at 64 KiB to guard against oversized headers.
+    loop {
+        let n = tcp.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        head.extend_from_slice(&buf[..n]);
+        if head.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+        if head.len() > 64 * 1024 {
+            let resp = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            tcp.write_all(resp.as_bytes()).await.ok();
+            return Ok(());
+        }
     }
-    head.extend_from_slice(&buf[..n]);
 
     let host = parse_host_header(&head)
-        .ok_or_else(|| anyhow!("no Host header in first {n} bytes"))?;
+        .ok_or_else(|| anyhow!("no Host header in {} bytes of request", head.len()))?;
     let (method, path) = parse_request_line(&head);
 
     // 1. Check proxy routes (static upstreams).
