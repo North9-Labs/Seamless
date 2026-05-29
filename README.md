@@ -6,7 +6,7 @@
 
 HTTP · Raw TCP · Hybrid X25519 + ML-KEM-768 · No TLS required
 
-[![CI](https://github.com/North9LLC/Seamless/actions/workflows/ci.yml/badge.svg)](https://github.com/North9LLC/Seamless/actions/workflows/ci.yml)
+[![CI](https://github.com/North9-Labs/Seamless/actions/workflows/ci.yml/badge.svg)](https://github.com/North9-Labs/Seamless/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#building-from-source)
 
@@ -14,7 +14,7 @@ HTTP · Raw TCP · Hybrid X25519 + ML-KEM-768 · No TLS required
 
 ---
 
-Seamless exposes services behind NAT to the internet through a relay you control. Every byte between client and relay is encrypted end-to-end by [Seam](https://github.com/North9LLC/Seam) — a post-quantum transport protocol built on a hybrid Noise_XX + ML-KEM-768 handshake.
+Seamless exposes services behind NAT to the internet through a relay you control. Every byte between client and relay is encrypted end-to-end by [Seam](https://github.com/North9-Labs/Seam) — a post-quantum transport protocol built on a hybrid Noise_XX + ML-KEM-768 handshake.
 
 ```
   internet              your relay                  your machine (NAT)
@@ -45,8 +45,8 @@ The client opens one outbound Seam connection to the relay — NAT-friendly, no 
 Requires Rust 1.88+. Clone both repos side by side (Seam is a path dependency):
 
 ```bash
-git clone https://github.com/North9LLC/Seam
-git clone https://github.com/North9LLC/Seamless
+git clone https://github.com/North9-Labs/Seam
+git clone https://github.com/North9-Labs/Seamless
 cd Seamless
 cargo build --release
 ```
