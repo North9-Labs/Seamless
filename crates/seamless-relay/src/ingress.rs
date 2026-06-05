@@ -129,6 +129,31 @@ where
         return Ok(());
     }
 
+    // Enforce max body size — check Content-Length header before proxying.
+    // This catches well-behaved clients early; chunked/streaming bodies are
+    // capped at the byte-copy layer in `forward_body_limited`.
+    if state.max_body_bytes > 0 {
+        if let Some(cl) = parse_content_length(&head) {
+            if cl > state.max_body_bytes {
+                tracing::warn!(
+                    event = "request.body_too_large",
+                    peer = %peer,
+                    content_length = cl,
+                    limit = state.max_body_bytes,
+                    "rejected oversized request from {peer}: Content-Length {cl} > limit {}",
+                    state.max_body_bytes
+                );
+                let body = format!(
+                    "seamless: request body too large ({cl} bytes, limit {} bytes)\n",
+                    state.max_body_bytes
+                );
+                let resp = error_response("413 Content Too Large", &body, is_https);
+                stream.write_all(resp.as_bytes()).await.ok();
+                return Ok(());
+            }
+        }
+    }
+
     // 1. Check proxy routes (static upstreams).
     let upstream_url = {
         let host_only = host.split(':').next().unwrap_or(&host).to_lowercase();
@@ -277,6 +302,20 @@ fn error_response(status: &str, body: &str, is_https: bool) -> String {
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain\r\n{hsts}Connection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+/// Parse the `Content-Length` header value from a raw HTTP header block.
+/// Returns `None` if the header is absent or not a valid integer.
+fn parse_content_length(bytes: &[u8]) -> Option<u64> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    for line in s.split("\r\n") {
+        if let Some(colon) = line.find(':') {
+            if line[..colon].eq_ignore_ascii_case("content-length") {
+                return line[colon + 1..].trim().parse::<u64>().ok();
+            }
+        }
+    }
+    None
 }
 
 fn parse_request_line(bytes: &[u8]) -> (String, String) {
@@ -448,5 +487,31 @@ mod tests {
         let r = error_response("503 Service Unavailable", "paused\n", true);
         assert!(r.contains("Strict-Transport-Security: max-age=63072000; includeSubDomains\r\n"));
         assert!(r.contains("Content-Length: 7"));
+    }
+
+    #[test]
+    fn parse_content_length_present() {
+        let raw = b"POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 12345\r\n\r\n";
+        assert_eq!(parse_content_length(raw), Some(12345));
+    }
+
+    #[test]
+    fn parse_content_length_case_insensitive() {
+        let raw = b"POST / HTTP/1.1\r\nHost: x\r\ncontent-length: 99\r\n\r\n";
+        assert_eq!(parse_content_length(raw), Some(99));
+        let raw2 = b"POST / HTTP/1.1\r\nHost: x\r\nCONTENT-LENGTH: 500\r\n\r\n";
+        assert_eq!(parse_content_length(raw2), Some(500));
+    }
+
+    #[test]
+    fn parse_content_length_missing() {
+        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        assert_eq!(parse_content_length(raw), None);
+    }
+
+    #[test]
+    fn parse_content_length_invalid() {
+        let raw = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: not-a-number\r\n\r\n";
+        assert_eq!(parse_content_length(raw), None);
     }
 }

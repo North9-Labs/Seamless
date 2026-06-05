@@ -49,7 +49,10 @@ pub async fn start_admin(
         .route("/api/routes/{id}", put(update_route).delete(delete_route))
         // Seamless tunnels — read-only list (protected by admin token)
         .route("/api/tunnels", get(list_seamless_tunnels))
+        // Stats history ring buffer
+        .route("/api/stats/history", get(stats_history_handler))
         // Seamless tunnels — admin management (protected by Bearer token)
+        .route("/admin/tunnels/disconnect", post(admin_bulk_disconnect))
         .route("/admin/tunnels/{id}", delete(admin_disconnect_tunnel))
         .route("/admin/tunnels/{id}/stats", get(admin_tunnel_stats))
         .route("/admin/tunnels/{id}/pause", post(admin_pause_tunnel))
@@ -499,6 +502,108 @@ async fn admin_resume_tunnel(
     entry.paused.store(false, Ordering::Relaxed);
     tracing::info!("admin resumed tunnel {id}");
     (StatusCode::NO_CONTENT, Json(serde_json::Value::Null)).into_response()
+}
+
+/// `GET /api/stats/history` — return the rolling 60-entry stats ring buffer.
+async fn stats_history_handler(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let history = s.stats_history.snapshot().await;
+    Json(serde_json::json!({ "history": history })).into_response()
+}
+
+/// `POST /admin/tunnels/disconnect` — bulk-disconnect all tunnels from a given IP.
+///
+/// Body: `{"client_ip": "1.2.3.4"}`
+///
+/// Useful for rapid incident response: one call evicts every tunnel belonging
+/// to a compromised or misbehaving client IP.
+async fn admin_bulk_disconnect(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<BulkDisconnectReq>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+
+    let target_ip = req.client_ip.trim().to_string();
+    if target_ip.is_empty() {
+        return bad_request("client_ip is required").into_response();
+    }
+
+    // Collect matching entries while holding the lock, then disconnect each.
+    let matching: Vec<Arc<crate::tunnel::TunnelEntry>> = {
+        let t = s.tunnels.lock().await;
+        t.values()
+            .filter(|e| e.client_ip == target_ip)
+            .cloned()
+            .collect()
+    };
+
+    if matching.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("no active tunnels found for IP {target_ip}"),
+                "disconnected": 0_u32,
+            })),
+        )
+            .into_response();
+    }
+
+    let now = unix_now();
+    let count = matching.len();
+    for entry in &matching {
+        let duration_secs = now - entry.connected_at;
+        tracing::info!(
+            event = "tunnel.admin_bulk_disconnect",
+            subdomain = %entry.subdomain,
+            client_ip = %entry.client_ip,
+            duration_secs = duration_secs,
+            "admin bulk-disconnected tunnel '{}' from {} ({}s)",
+            entry.subdomain, entry.client_ip, duration_secs
+        );
+        // Fire webhook for each evicted tunnel.
+        if let Some(ref url) = *s.webhook_url {
+            let webhook = crate::tunnel::WebhookCtx {
+                url: Some(std::sync::Arc::new(url.clone())),
+                client: s.http_client.clone(),
+            };
+            webhook.fire(serde_json::json!({
+                "event": "tunnel.admin_bulk_disconnect",
+                "subdomain": entry.subdomain,
+                "client_ip": entry.client_ip,
+                "duration_secs": duration_secs,
+            }));
+        }
+        let mut tx_guard = entry.disconnect_tx.lock().await;
+        if let Some(tx) = tx_guard.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    tracing::info!(
+        event = "tunnel.bulk_disconnect_complete",
+        client_ip = %target_ip,
+        count = count,
+        "admin bulk-disconnect: evicted {count} tunnel(s) from {target_ip}"
+    );
+
+    Json(serde_json::json!({
+        "disconnected": count,
+        "client_ip": target_ip,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct BulkDisconnectReq {
+    client_ip: String,
 }
 
 // ── Health / Ready / Metrics (public, used by load balancers) ─────────────────

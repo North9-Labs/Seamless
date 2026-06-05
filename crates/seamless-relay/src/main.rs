@@ -27,6 +27,45 @@ use metrics::Metrics;
 use store::SharedStore;
 use tunnel::{AuthPolicy, RateLimiter, ReservedSubdomains, SubdomainPrefix, TcpPortSet, TunnelMap};
 
+// ── Stats history ring buffer ─────────────────────────────────────────────────
+
+/// One snapshot of relay statistics captured every 60 s.
+#[derive(Clone, serde::Serialize)]
+pub struct StatsSnapshot {
+    /// Unix timestamp (seconds) when the snapshot was taken.
+    pub ts: i64,
+    /// Number of active tunnels at snapshot time.
+    pub active_tunnels: u64,
+    /// Cumulative connection counter at snapshot time.
+    pub total_connections: u64,
+}
+
+/// A 60-entry ring buffer of `StatsSnapshot`, shared across tasks.
+#[derive(Clone)]
+pub struct StatsHistory {
+    inner: Arc<Mutex<std::collections::VecDeque<StatsSnapshot>>>,
+}
+
+impl StatsHistory {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(60))),
+        }
+    }
+
+    pub async fn push(&self, snap: StatsSnapshot) {
+        let mut buf = self.inner.lock().await;
+        if buf.len() >= 60 {
+            buf.pop_front();
+        }
+        buf.push_back(snap);
+    }
+
+    pub async fn snapshot(&self) -> Vec<StatsSnapshot> {
+        self.inner.lock().await.iter().cloned().collect()
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: SharedStore,
@@ -70,6 +109,10 @@ pub struct AppState {
     pub subdomain_length: usize,
     /// Max tunnel age in seconds (0 = unlimited). Background task expires old tunnels.
     pub tunnel_max_age: u64,
+    /// Rolling 60-entry ring buffer of per-minute stats snapshots.
+    pub stats_history: StatsHistory,
+    /// Max proxied HTTP request body size in bytes (0 = unlimited).
+    pub max_body_bytes: u64,
 }
 
 pub struct RelayPubkeys {
@@ -113,6 +156,7 @@ struct FileConfig {
     subdomain_prefix: Option<String>,
     subdomain_length: Option<usize>,
     tunnel_max_age: Option<u64>,
+    max_body_size: Option<u64>,
 }
 
 /// Find and load the TOML config file, returning the loaded config and the
@@ -298,6 +342,12 @@ struct Args {
     /// from persisting indefinitely — recommended for shared government deployments.
     #[arg(long, default_value_t = 0, env = "SEAMLESS_TUNNEL_MAX_AGE")]
     tunnel_max_age: u64,
+
+    /// Maximum proxied HTTP request body size in bytes (0 = unlimited, default 10485760 = 10 MiB).
+    /// Requests whose bodies exceed this limit are rejected with 413 Content Too Large
+    /// before they reach the tunnel backend, preventing memory exhaustion attacks.
+    #[arg(long, default_value_t = 10 * 1024 * 1024, env = "SEAMLESS_MAX_BODY_SIZE")]
+    max_body_size: u64,
 }
 
 /// Merge file-config values into `args` for any field that still holds its
@@ -396,6 +446,9 @@ fn apply_file_config(args: &mut Args, cfg: &FileConfig) {
     }
     if args.tunnel_max_age == 0 {
         if let Some(v) = cfg.tunnel_max_age { args.tunnel_max_age = v; }
+    }
+    if args.max_body_size == 10 * 1024 * 1024 {
+        if let Some(v) = cfg.max_body_size { args.max_body_size = v; }
     }
 }
 
@@ -534,6 +587,16 @@ async fn main() -> Result<()> {
         );
     }
 
+    let stats_history = StatsHistory::new();
+
+    if args.max_body_size > 0 {
+        info!(
+            "request body limit: {} bytes ({} MiB)",
+            args.max_body_size,
+            args.max_body_size / (1024 * 1024)
+        );
+    }
+
     let state = AppState {
         store,
         store_path,
@@ -565,6 +628,8 @@ async fn main() -> Result<()> {
         subdomain_prefix,
         subdomain_length,
         tunnel_max_age: args.tunnel_max_age,
+        stats_history: stats_history.clone(),
+        max_body_bytes: args.max_body_size,
     };
 
     // Warn if admin port is publicly bound without an IP allowlist.
@@ -698,6 +763,28 @@ async fn main() -> Result<()> {
                     drop(tx_guard);
                     map.remove(&key);
                 }
+            }
+        });
+    }
+
+    // Stats history background task — captures a snapshot every 60 s.
+    {
+        let tunnels_for_stats = tunnels.clone();
+        let metrics_for_stats = state.metrics.clone();
+        let hist = stats_history.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                let active_tunnels = tunnels_for_stats.lock().await.len() as u64;
+                let total_connections = metrics_for_stats.connections_total.load(std::sync::atomic::Ordering::Relaxed);
+                hist.push(StatsSnapshot {
+                    ts: crate::store::unix_now(),
+                    active_tunnels,
+                    total_connections,
+                }).await;
             }
         });
     }

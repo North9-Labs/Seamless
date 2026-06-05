@@ -659,6 +659,20 @@
           <div class="stat-sub">logged this session</div>
         </div>
       </div>
+      <!-- Traffic sparkline -->
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-header">
+          <span class="card-title"><i data-lucide="bar-chart-2" width="11" height="11"></i> Tunnel Activity (last 60 min)</span>
+          <span style="font-size:11px;color:var(--text3)">Snapshots captured every minute</span>
+        </div>
+        <div style="padding:12px 18px 14px">
+          <canvas id="stats-sparkline" height="56" style="width:100%;display:block"></canvas>
+          <div style="display:flex;gap:16px;margin-top:6px;font-size:11px;color:var(--text3)">
+            <span><span style="color:var(--blue)">■</span> Active tunnels</span>
+            <span id="sparkline-peak"></span>
+          </div>
+        </div>
+      </div>
       <div class="dash-grid2">
         <div class="card">
           <div class="card-header">
@@ -755,6 +769,9 @@
         <div class="hero-sub">Active connections — X25519 + ML-KEM-768 hybrid KEM, ChaCha20-Poly1305</div>
       </div>
       <div class="hero-actions">
+        <button class="btn btn-danger btn-sm" onclick="openBulkDisconnect()" title="Disconnect all tunnels from a specific IP">
+          <i data-lucide="shield-off" width="13" height="13"></i> Bulk Disconnect IP
+        </button>
         <span style="font-size:11px;color:var(--text3)">Auto-refreshes every 5s &mdash; <span id="tunnel-last-updated">updating…</span></span>
       </div>
     </div>
@@ -1459,6 +1476,111 @@ function _updateTunnelAgo() {
 // Refresh the "X ago" label every second so it counts up live.
 setInterval(_updateTunnelAgo, 1000);
 
+// ── Stats Sparkline ─────────────────────────────────────────────
+async function loadStatsHistory() {
+  try {
+    var d = await api('GET', '/stats/history');
+    var history = (d.history || []);
+    drawSparkline(history);
+  } catch(e) {}
+}
+
+function drawSparkline(history) {
+  var canvas = document.getElementById('stats-sparkline');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var dpr = window.devicePixelRatio || 1;
+  var w = canvas.offsetWidth || 600;
+  var h = 56;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  if (!history.length) {
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text3').trim() || '#666';
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No history yet — snapshots captured every minute', w/2, h/2 + 4);
+    return;
+  }
+
+  var vals = history.map(function(s){ return s.active_tunnels; });
+  var maxVal = Math.max.apply(null, vals) || 1;
+  var peak = Math.max.apply(null, vals);
+  var peakEl = document.getElementById('sparkline-peak');
+  if (peakEl) peakEl.textContent = 'Peak: ' + peak + ' tunnel' + (peak !== 1 ? 's' : '');
+
+  var isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+  var lineColor = isDark ? '#4f8ef7' : '#2563eb';
+  var fillColor = isDark ? 'rgba(79,142,247,0.12)' : 'rgba(37,99,235,0.08)';
+  var gridColor = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
+
+  var pad = {top:4, bottom:4, left:2, right:2};
+  var iw = w - pad.left - pad.right;
+  var ih = h - pad.top - pad.bottom;
+  var n = vals.length;
+
+  // Grid line at midpoint
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  var mid = pad.top + ih / 2;
+  ctx.moveTo(pad.left, mid); ctx.lineTo(w - pad.right, mid);
+  ctx.stroke();
+
+  // Build path
+  ctx.beginPath();
+  vals.forEach(function(v, i) {
+    var x = pad.left + (n === 1 ? iw/2 : i / (n-1) * iw);
+    var y = pad.top + ih - (v / maxVal * ih);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+
+  // Stroke
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  // Fill under line
+  var lastX = pad.left + (n === 1 ? iw/2 : (n-1) / (n-1) * iw);
+  var firstX = pad.left + (n === 1 ? iw/2 : 0);
+  ctx.lineTo(lastX, pad.top + ih);
+  ctx.lineTo(firstX, pad.top + ih);
+  ctx.closePath();
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+}
+
+// ── Bulk Disconnect ──────────────────────────────────────────────
+function openBulkDisconnect() {
+  var ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.innerHTML = '<div class="modal"><div class="modal-head"><h3>Bulk Disconnect by IP</h3><button class="xbtn" onclick="this.closest(\'.ov\').remove()"><i data-lucide="x" width="14" height="14"></i></button></div><div class="modal-body"><div class="field"><label>Client IP Address <span class="field-required">required</span></label><input id="bdip" type="text" placeholder="e.g. 1.2.3.4" autocomplete="off" spellcheck="false"><span class="hint">All active tunnels from this IP will be immediately disconnected</span></div><div class="info-banner" style="margin-top:8px;border-color:var(--red-dim);background:var(--red-dim)"><i data-lucide="alert-triangle" width="13" height="13" style="color:var(--red)"></i><span style="color:var(--red)">This action is immediate and irreversible — the client will need to reconnect.</span></div></div><div class="modal-foot"><button class="btn btn-ghost" onclick="this.closest(\'.ov\').remove()">Cancel</button><button class="btn btn-danger" id="bdok"><i data-lucide="shield-off" width="13" height="13"></i> Disconnect All</button></div></div>';
+  document.body.appendChild(ov);
+  requestAnimationFrame(function(){ ov.classList.add('show'); });
+  lucide.createIcons();
+  setTimeout(function(){ ov.querySelector('#bdip').focus(); }, 60);
+  ov.addEventListener('click', function(e){ if(e.target===ov) ov.remove(); });
+  ov.querySelector('#bdok').addEventListener('click', async function() {
+    var ip = ov.querySelector('#bdip').value.trim();
+    if (!ip) return toast('IP address required','err');
+    this.disabled = true; this.textContent = 'Disconnecting…';
+    try {
+      var r = await api('POST', '/admin/tunnels/disconnect', {client_ip: ip});
+      ov.remove();
+      toast('Disconnected ' + r.disconnected + ' tunnel' + (r.disconnected !== 1 ? 's' : '') + ' from ' + ip);
+      loadSeamlessTunnels();
+    } catch(e) {
+      toast(e.message, 'err');
+      this.disabled = false;
+      this.innerHTML = '<i data-lucide="shield-off" width="13" height="13"></i> Disconnect All';
+      lucide.createIcons();
+    }
+  });
+}
+
 async function loadSeamlessTunnels() {
   try {
     var d = await api('GET','/tunnels');
@@ -1720,11 +1842,16 @@ async function saveSettings() {
 lucide.createIcons();
 updateThemeIcon();
 loadDashboard();
+loadStatsHistory();
 setInterval(function() {
   if (curSection === 'logs' && document.getElementById('log-auto').checked) loadLogs();
   if (curSection === 'tunnels') loadSeamlessTunnels();
-  if (curSection === 'dashboard') loadDashboard();
+  if (curSection === 'dashboard') { loadDashboard(); loadStatsHistory(); }
 }, 5000);
+// Redraw sparkline on resize to stay sharp
+window.addEventListener('resize', function() {
+  if (curSection === 'dashboard') loadStatsHistory();
+});
 </script>
 </body>
 </html>
