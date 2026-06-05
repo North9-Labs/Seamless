@@ -1,13 +1,14 @@
 use std::net::SocketAddr;
 
 use anyhow::{anyhow, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use seamless_common::{write_frame, ControlFrame};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::TlsAcceptor;
 use tracing::{info, warn};
 
 use crate::logs::{self, LogEntry};
 use crate::store::unix_now;
-use crate::tunnel::forward_to_tunnel;
 use crate::AppState;
 
 pub async fn run_http_ingress(addr: SocketAddr, state: AppState) -> Result<()> {
@@ -24,14 +25,43 @@ pub async fn run_http_ingress(addr: SocketAddr, state: AppState) -> Result<()> {
     }
 }
 
-async fn route_http(mut tcp: TcpStream, peer: SocketAddr, state: AppState) -> Result<()> {
+pub async fn run_https_ingress(
+    addr: SocketAddr,
+    acceptor: TlsAcceptor,
+    state: AppState,
+) -> Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    info!("https ingress listening on tcp://{addr}");
+    loop {
+        let (tcp, peer) = listener.accept().await?;
+        let acceptor = acceptor.clone();
+        let state = state.clone();
+        tokio::spawn(async move {
+            match acceptor.accept(tcp).await {
+                Ok(tls_stream) => {
+                    if let Err(e) = route_http(tls_stream, peer, state).await {
+                        warn!("https conn from {peer}: {e:#}");
+                    }
+                }
+                Err(e) => {
+                    warn!("tls handshake from {peer}: {e}");
+                }
+            }
+        });
+    }
+}
+
+async fn route_http<S>(mut stream: S, peer: SocketAddr, state: AppState) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let mut head = Vec::with_capacity(4096);
     let mut buf = [0u8; 4096];
 
     // Read until we have the full HTTP header block (ends with \r\n\r\n).
     // Cap at 64 KiB to guard against oversized headers.
     loop {
-        let n = tcp.read(&mut buf).await?;
+        let n = stream.read(&mut buf).await?;
         if n == 0 {
             return Ok(());
         }
@@ -41,7 +71,7 @@ async fn route_http(mut tcp: TcpStream, peer: SocketAddr, state: AppState) -> Re
         }
         if head.len() > 64 * 1024 {
             let resp = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            tcp.write_all(resp.as_bytes()).await.ok();
+            stream.write_all(resp.as_bytes()).await.ok();
             return Ok(());
         }
     }
@@ -75,7 +105,7 @@ async fn route_http(mut tcp: TcpStream, peer: SocketAddr, state: AppState) -> Re
             routed_to: format!("proxy:{url}"),
             status: 0,
         }).await;
-        tokio::io::copy_bidirectional(&mut tcp, &mut upstream).await?;
+        tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
         return Ok(());
     }
 
@@ -95,8 +125,13 @@ async fn route_http(mut tcp: TcpStream, peer: SocketAddr, state: AppState) -> Re
                 routed_to: format!("tunnel:{sub}"),
                 status: 0,
             }).await;
-            let stream = mux.open_stream().await;
-            return forward_to_tunnel(tcp, stream, head, peer).await;
+            let mut apex = mux.open_stream().await;
+            write_frame(&mut apex, &ControlFrame::NewConn { peer_addr: peer.to_string() }).await?;
+            if !head.is_empty() {
+                apex.write_all(&head).await?;
+            }
+            let _ = tokio::io::copy_bidirectional(&mut stream, &mut apex).await;
+            return Ok(());
         }
     }
 
@@ -115,7 +150,7 @@ async fn route_http(mut tcp: TcpStream, peer: SocketAddr, state: AppState) -> Re
         body.len(),
         body
     );
-    tcp.write_all(resp.as_bytes()).await.ok();
+    stream.write_all(resp.as_bytes()).await.ok();
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use seamless_common::{read_frame, write_frame, ControlFrame, TunnelKind, PROTOCOL_VERSION};
@@ -164,11 +165,24 @@ async fn serve_http(
     write_frame(&mut control, &ControlFrame::Registered { public_url: url.clone() }).await?;
     info!("registered http tunnel: {url}");
 
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(25));
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ping_interval.tick().await; // discard first immediate tick
+
     let mut drain = [0u8; 256];
     loop {
-        match control.read(&mut drain).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+        tokio::select! {
+            _ = ping_interval.tick() => {
+                if write_frame(&mut control, &ControlFrame::Ping).await.is_err() {
+                    break;
+                }
+            }
+            result = control.read(&mut drain) => {
+                match result {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
         }
     }
 
@@ -205,11 +219,24 @@ async fn serve_tcp(
         run_tcp_listener(listener, mux_for_listener, shutdown_rx).await;
     });
 
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(25));
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ping_interval.tick().await; // discard first immediate tick
+
     let mut drain = [0u8; 256];
     loop {
-        match control.read(&mut drain).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+        tokio::select! {
+            _ = ping_interval.tick() => {
+                if write_frame(&mut control, &ControlFrame::Ping).await.is_err() {
+                    break;
+                }
+            }
+            result = control.read(&mut drain) => {
+                match result {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
         }
     }
 

@@ -4,10 +4,10 @@
 
 **Post-quantum reverse tunnels — expose any service through a relay you control.**
 
-HTTP · Raw TCP · Hybrid X25519 + ML-KEM-768 · No TLS required
+HTTP · HTTPS · Raw TCP · Hybrid X25519 + ML-KEM-768
 
-[![CI](https://github.com/North9-Labs/Seamless/actions/workflows/ci.yml/badge.svg)](https://github.com/North9-Labs/Seamless/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/North9LLC/Seamless/actions/workflows/ci.yml/badge.svg)](https://github.com/North9LLC/Seamless/actions/workflows/ci.yml)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#building-from-source)
 
 </div>
@@ -18,7 +18,7 @@ Seamless exposes services behind NAT to the internet through a relay you control
 
 ```
   internet              your relay                  your machine (NAT)
-  ┌──────────┐  TCP     ┌──────────────────┐  UDP   ┌──────────────────┐
+  ┌──────────┐  TCP/TLS ┌──────────────────┐  UDP   ┌──────────────────┐
   │ browser  │─────────►│ seamless-relay   │◄───────│ seamless client  │
   │ curl     │ Host:foo │                  │  Seam  │                  │
   └──────────┘          │  routes by       │  (PQ)  │ → 127.0.0.1:3000 │
@@ -34,9 +34,11 @@ The client opens one outbound Seam connection to the relay — NAT-friendly, no 
 
 - **Post-quantum by default.** Harvest-now-decrypt-later attacks cannot reach session keys — ML-KEM-768 is in the handshake, not optional.
 - **Works through NAT.** Client dials out. No firewall rules, no port forwarding.
-- **FEC on lossy links.** Seam's forward error correction keeps tunneled requests fluid on hotel Wi-Fi where TCP-based tunnels stall.
-- **HTTP and raw TCP.** Route by subdomain for HTTP services. Expose SSH, databases, or any TCP service on a relay-assigned port.
-- **Reconnect with backoff.** Client reconnects automatically (1 s → 30 s cap) after any drop.
+- **HTTPS on the public side.** Relay terminates TLS — bring your own cert or use `--tls-self-signed` for testing.
+- **FEC on lossy links.** Seam's adaptive forward error correction keeps tunneled requests fluid on hotel Wi-Fi where TCP-based tunnels stall.
+- **HTTP and raw TCP.** Route by subdomain for HTTP/HTTPS services. Expose SSH, databases, or any TCP service on a relay-assigned port.
+- **Config file.** Save relay keys once (`seamless config init`), then `seamless http 3000` just works.
+- **Reconnect with backoff.** Client reconnects automatically (1 s → 30 s cap) with keepalive pings so idle tunnels stay alive.
 
 ---
 
@@ -46,18 +48,39 @@ Requires Rust 1.88+. Clone both repos side by side (Seam is a path dependency):
 
 ```bash
 git clone https://github.com/North9-Labs/Seam
-git clone https://github.com/North9-Labs/Seamless
+git clone https://github.com/North9LLC/Seamless
 cd Seamless
 cargo build --release
 ```
 
 ### 1. Start the relay
 
+**HTTP only:**
 ```bash
 ./target/release/seamless-relay \
   --seam-addr 0.0.0.0:4443 \
   --http-addr 0.0.0.0:80 \
   --base-domain tunnel.example.com
+```
+
+**HTTP + HTTPS with your own cert:**
+```bash
+./target/release/seamless-relay \
+  --seam-addr 0.0.0.0:4443 \
+  --http-addr 0.0.0.0:80 \
+  --https-addr 0.0.0.0:443 \
+  --tls-cert /etc/ssl/tunnel.example.com.pem \
+  --tls-key  /etc/ssl/tunnel.example.com.key \
+  --base-domain tunnel.example.com
+```
+
+**Quick local test with self-signed cert:**
+```bash
+./target/release/seamless-relay \
+  --seam-addr 0.0.0.0:4443 \
+  --http-addr 0.0.0.0:8080 \
+  --https-addr 0.0.0.0:8443 \
+  --tls-self-signed
 ```
 
 On first boot the relay generates a persistent identity and prints its public keys:
@@ -68,44 +91,65 @@ On first boot the relay generates a persistent identity and prints its public ke
   connect: seamless http <port> --relay ... --x25519 ... --kem ...
 ```
 
-Copy those keys — clients need them to authenticate the relay.
+### 2. Save relay keys (one-time setup)
 
-### 2. Expose an HTTP service
+Instead of pasting the full hex keys on every command, save them:
 
 ```bash
-./target/release/seamless \
-  --relay <relay-ip>:4443 \
-  --x25519 <hex> \
-  --kem    <hex> \
-  http 3000 --subdomain myapp
+./target/release/seamless config init \
+  --relay relay.example.com:4443 \
+  --x25519 <64 hex chars> \
+  --kem    <2336 hex chars>
+```
+
+```
+  config saved → /home/user/.config/seamless/config.toml
+
+  relay  = relay.example.com:4443
+  x25519 = deadbeef...
+  kem    = <1168 bytes>
+```
+
+Now `seamless http 3000` works with no extra flags.
+
+```bash
+# Show saved config
+./target/release/seamless config show
+
+# Save auth token too
+./target/release/seamless config init --token my-secret-token
+```
+
+### 3. Expose an HTTP service
+
+```bash
+./target/release/seamless http 3000 --subdomain myapp
 ```
 
 ```
   seamless tunnel ready
-    public:  http://myapp.tunnel.example.com
+    public:  https://myapp.tunnel.example.com
     local:   127.0.0.1:3000
 ```
 
-### 3. Expose a raw TCP service
+### 4. Expose a raw TCP service
 
 ```bash
-# SSH
-./target/release/seamless \
-  --relay <relay-ip>:4443 --x25519 <hex> --kem <hex> \
-  tcp 22 --remote-port 2222
+# SSH (remote port 2222 → local :22)
+./target/release/seamless tcp 22 --remote-port 2222
 
-ssh -p 2222 user@<relay-ip>
+ssh -p 2222 user@relay.example.com
 ```
 
 ### Auth tokens (recommended)
 
 ```bash
-# Relay
+# Relay — one token per line, comments with #
 echo "your-secret-token" > /etc/seamless/tokens
 ./target/release/seamless-relay --auth-file /etc/seamless/tokens ...
 
-# Client
-./target/release/seamless --token your-secret-token ...
+# Client — save it in config once
+./target/release/seamless config init --token your-secret-token
 ```
 
 ---
@@ -157,7 +201,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and [docs/P
 | Transport | CUBIC CC, RACK-TLP loss detection, token-bucket pacer | Nothing |
 | Multiplexing | `SeamMux` + `SeamStream` (AsyncRead/AsyncWrite) | Designates stream 0 as control |
 | Reliability | ARQ + GF(2⁸) FEC | Nothing |
-| Application | — | Register/Registered/NewConn protocol, subdomain registry, HTTP Host routing, TCP port listeners |
+| TLS | — | Optional HTTPS ingress (rustls, BYO or self-signed cert) |
+| Application | — | Register/Registered/NewConn protocol, subdomain registry, HTTP/HTTPS Host routing, TCP port listeners, client config file |
 
 ---
 
@@ -173,13 +218,30 @@ The relay exposes an admin panel at `:8088` (default). Features:
 
 ---
 
+## Relay flags reference
+
+| Flag | Default | Description |
+|---|---|---|
+| `--seam-addr` | `0.0.0.0:4443` | UDP address for Seam connections |
+| `--http-addr` | `0.0.0.0:8080` | TCP address for HTTP ingress |
+| `--https-addr` | — | TCP address for HTTPS ingress (requires TLS flags) |
+| `--tls-cert` | — | Path to TLS certificate PEM |
+| `--tls-key` | — | Path to TLS private key PEM |
+| `--tls-self-signed` | `false` | Generate a self-signed cert at startup |
+| `--admin-addr` | `0.0.0.0:8088` | TCP address for admin UI |
+| `--base-domain` | `localhost` | Base domain for tunnel URLs |
+| `--auth-file` | — | File of allowed auth tokens (one per line) |
+| `--store` | `seamless-relay.json` | Path to JSON store (identity + proxy routes) |
+
+---
+
 ## Roadmap
 
-- TLS termination on the public side (Let's Encrypt via rustls)
-- Config file instead of CLI flags
-- DNS TXT pubkey bootstrap (clients won't need the hex keys on the command line)
-- Subdomain reservations across reconnects
+- Let's Encrypt / ACME automatic cert provisioning
+- DNS TXT pubkey bootstrap (clients won't need hex keys even on first connect)
+- Subdomain persistence across reconnects
 - HTTP/2 + WebSocket passthrough verification
+- Multi-client load balancing per subdomain
 
 ---
 

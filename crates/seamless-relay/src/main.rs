@@ -16,6 +16,7 @@ mod cloudflare;
 mod ingress;
 mod logs;
 mod store;
+mod tls;
 mod tunnel;
 
 use logs::LogBuffer;
@@ -72,6 +73,22 @@ struct Args {
     /// Log level: error, warn, info, debug, trace (overrides RUST_LOG).
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// TCP address for public HTTPS ingress (requires --tls-cert/--tls-key or --tls-self-signed).
+    #[arg(long)]
+    https_addr: Option<SocketAddr>,
+
+    /// Path to TLS certificate PEM file for HTTPS.
+    #[arg(long)]
+    tls_cert: Option<String>,
+
+    /// Path to TLS private key PEM file for HTTPS.
+    #[arg(long)]
+    tls_key: Option<String>,
+
+    /// Generate and use a self-signed TLS certificate for HTTPS.
+    #[arg(long, default_value_t = false)]
+    tls_self_signed: bool,
 }
 
 #[tokio::main]
@@ -149,6 +166,26 @@ async fn main() -> Result<()> {
             tracing::error!("http ingress died: {e:#}");
         }
     });
+
+    // Start HTTPS ingress if configured.
+    if let Some(https_addr) = args.https_addr {
+        let acceptor = if args.tls_self_signed {
+            tls::self_signed_acceptor(&[&args.base_domain])
+                .expect("failed to generate self-signed TLS cert")
+        } else if let (Some(cert), Some(key)) = (&args.tls_cert, &args.tls_key) {
+            tls::acceptor_from_files(cert, key)
+                .expect("failed to load TLS cert/key")
+        } else {
+            panic!("--https-addr requires --tls-cert + --tls-key or --tls-self-signed");
+        };
+        info!("tls: starting https ingress on {https_addr}");
+        let https_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ingress::run_https_ingress(https_addr, acceptor, https_state).await {
+                tracing::error!("https ingress died: {e:#}");
+            }
+        });
+    }
 
     // Seam server accept loop.
     let mut server = Server::bind(args.seam_addr, identity)
