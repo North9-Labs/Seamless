@@ -101,6 +101,15 @@ struct Args {
     /// Generate and use a self-signed TLS certificate for HTTPS.
     #[arg(long, default_value_t = false)]
     tls_self_signed: bool,
+
+    /// AEAD cipher suite preference for tunnel connections.
+    /// "chacha20poly1305" (default) or "aes256gcm" (CNSA 2.0).
+    /// AES-256-GCM is negotiated only when both the relay and the connecting
+    /// client advertise it; mismatching sides fall back to ChaCha20-Poly1305.
+    #[arg(long, default_value = "chacha20poly1305",
+          value_parser = ["chacha20poly1305", "aes256gcm"],
+          env = "SEAMLESS_CIPHER")]
+    cipher: String,
 }
 
 #[tokio::main]
@@ -208,7 +217,8 @@ async fn main() -> Result<()> {
     }
 
     // Seam server accept loop.
-    let mut server = Server::bind(args.seam_addr, identity)
+    let cipher = seam_protocol::crypto::CipherSuite::parse(&args.cipher).unwrap_or_default();
+    let mut server = Server::bind_with_cipher(args.seam_addr, identity, cipher)
         .await
         .map_err(|e| anyhow!("seam bind failed: {e}"))?;
     info!("seam server listening on udp://{}", args.seam_addr);
