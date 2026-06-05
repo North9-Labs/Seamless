@@ -213,26 +213,35 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow!("seam bind failed: {e}"))?;
     info!("seam server listening on udp://{}", args.seam_addr);
 
-    while let Some(conn) = server.accept().await {
-        let remote = conn.remote_addr().await;
-        info!("seam connection from {remote}");
-        let mux = SeamMux::new(conn);
-        let s = state.clone();
-        tokio::spawn(async move {
-            if let Err(e) = tunnel::handle_client(
-                mux,
-                s.tunnels,
-                s.tcp_ports,
-                (*s.base_domain).clone(),
-                s.http_port,
-                s.auth,
-                s.metrics,
-            )
-            .await
-            {
-                warn!("client from {remote} ended: {e:#}");
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("ctrl-c — shutting down gracefully");
+                break;
             }
-        });
+            conn = server.accept() => {
+                let Some(conn) = conn else { break };
+                let remote = conn.remote_addr().await;
+                info!("seam connection from {remote}");
+                let mux = SeamMux::new(conn);
+                let s = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = tunnel::handle_client(
+                        mux,
+                        s.tunnels,
+                        s.tcp_ports,
+                        (*s.base_domain).clone(),
+                        s.http_port,
+                        s.auth,
+                        s.metrics,
+                    )
+                    .await
+                    {
+                        warn!("client from {remote} ended: {e:#}");
+                    }
+                });
+            }
+        }
     }
 
     Ok(())

@@ -65,7 +65,10 @@ pub async fn save(store: &SharedStore, path: &PathBuf) -> anyhow::Result<()> {
             tokio::fs::create_dir_all(parent).await?;
         }
     }
-    tokio::fs::write(path, text).await?;
+    // Write to a temp file then rename — atomic on POSIX, prevents corruption on crash.
+    let tmp = path.with_extension("json.tmp");
+    tokio::fs::write(&tmp, &text).await?;
+    tokio::fs::rename(&tmp, path).await?;
     Ok(())
 }
 
