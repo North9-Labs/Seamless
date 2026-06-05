@@ -264,6 +264,15 @@ async fn main() -> Result<()> {
         admin_cidrs: Arc::new(admin_cidrs),
     };
 
+    // Warn if admin port is publicly bound without an IP allowlist.
+    if args.admin_addr.ip().is_unspecified() && state.admin_cidrs.is_empty() {
+        warn!(
+            "admin UI bound to {} with no --admin-allow-cidr restriction — \
+             restrict access with: --admin-allow-cidr 127.0.0.1/32",
+            args.admin_addr
+        );
+    }
+
     // Start admin UI server.
     let admin_state = state.clone();
     tokio::spawn(async move {

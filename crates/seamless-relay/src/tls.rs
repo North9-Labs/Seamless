@@ -47,10 +47,11 @@ fn acceptor_from_pem(cert_pem: &[u8], key_pem: &[u8]) -> Result<TlsAcceptor> {
         .ok_or_else(|| anyhow::anyhow!("no private key found in key PEM"))?;
 
 
-    let config = ServerConfig::builder()
+    // Enforce TLS 1.3 only — CNSA 2.0 / NIST SP 800-52 Rev 2 requirement.
+    let config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_no_client_auth()
         .with_single_cert(certs, key)
-        .context("building TLS server config")?;
+        .context("building TLS 1.3-only server config")?;
 
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
