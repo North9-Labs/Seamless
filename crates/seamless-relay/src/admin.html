@@ -49,6 +49,22 @@
       --text:   #0a0a14;
       --text2:  #50507a;
       --text3:  #9898b8;
+      --blue:        #2563eb;
+      --blue2:       #1d4ed8;
+      --blue-glow:   rgba(37,99,235,.15);
+      --blue-dim:    rgba(37,99,235,.08);
+      --green:       #059669;
+      --green-dim:   rgba(5,150,105,.08);
+      --red:         #dc2626;
+      --red-dim:     rgba(220,38,38,.08);
+      --amber:       #d97706;
+      --amber-dim:   rgba(217,119,6,.08);
+      --orange:      #ea580c;
+      --orange2:     #c2410c;
+      --orange-glow: rgba(234,88,12,.15);
+      --orange-dim:  rgba(234,88,12,.08);
+      --purple:      #7c3aed;
+      --purple-dim:  rgba(124,58,237,.08);
       color-scheme: light;
     }
 
@@ -83,7 +99,7 @@
       background-size: 200% 200%;
       animation: gradShift 6s ease-in-out infinite;
       display: flex; align-items: center; justify-content: center;
-      font-size: 15px; flex-shrink: 0;
+      flex-shrink: 0;
       box-shadow: 0 0 14px rgba(79,142,247,.22);
     }
     @keyframes gradShift { 0%,100%{background-position:0% 50%} 50%{background-position:100% 50%} }
@@ -112,6 +128,7 @@
       background: var(--green-dim); border: 1px solid rgba(52,211,153,.22);
       font-size: 11px; font-weight: 600; color: var(--green);
     }
+    [data-theme="light"] .status-pill { border-color: rgba(5,150,105,.25); }
     .s-dot {
       width: 6px; height: 6px; border-radius: 50%;
       background: var(--green); flex-shrink: 0;
@@ -179,6 +196,8 @@
 
     /* ── Stats ───────────────────────────────────────────────── */
     .stats-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
+    @media (max-width: 860px) { .stats-grid { grid-template-columns: repeat(2,1fr); } }
+    @media (max-width: 480px) { .stats-grid { grid-template-columns: 1fr; } }
     .stat {
       background: var(--s1); border: 1px solid var(--border); border-radius: var(--r);
       padding: 16px 18px 14px; position: relative; overflow: hidden;
@@ -186,7 +205,7 @@
     }
     .stat::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background: var(--stat-acc, linear-gradient(90deg, var(--blue), var(--purple))); }
     .stat:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,0,0,.22); border-color:var(--border2); }
-    [data-theme="light"] .stat:hover { box-shadow: 0 4px 16px rgba(0,0,0,.1); }
+    [data-theme="light"] .stat:hover { box-shadow: 0 4px 16px rgba(0,0,0,.08); }
     .stat-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
     .stat-ic { width:32px; height:32px; border-radius:8px; background: var(--sic-bg, var(--blue-dim)); color: var(--sic-c, var(--blue)); display:flex; align-items:center; justify-content:center; }
     .stat-num   { font-size:34px; font-weight:800; letter-spacing:-1.5px; line-height:1; }
@@ -198,6 +217,7 @@
     .stat-purple { --stat-acc:linear-gradient(90deg,var(--purple),#818cf8); --sic-bg:var(--purple-dim); --sic-c:var(--purple); }
 
     .dash-grid2 { display:grid; grid-template-columns:1fr 320px; gap:18px; }
+    @media (max-width: 900px) { .dash-grid2 { grid-template-columns: 1fr; } }
     .health-item { display:flex; align-items:center; gap:10px; padding:10px 18px; border-bottom:1px solid var(--border); }
     .health-item:last-child { border-bottom:none; }
     .health-info { flex:1; min-width:0; }
@@ -272,9 +292,7 @@
       opacity: 0; pointer-events: none;
       transition: opacity .22s ease;
     }
-    .panel-wrap.open {
-      opacity: 1; pointer-events: auto;
-    }
+    .panel-wrap.open { opacity: 1; pointer-events: auto; }
     .panel-backdrop {
       position: absolute; inset: 0;
       background: rgba(0,0,0,.6); backdrop-filter: blur(3px);
@@ -293,8 +311,7 @@
     .panel-wrap.open .panel { transform: none; }
 
     .panel-head {
-      padding: 0 20px;
-      height: 56px;
+      padding: 0 20px; height: 56px;
       border-bottom: 1px solid var(--border);
       display: flex; align-items: center; justify-content: space-between;
       background: var(--s2); flex-shrink: 0;
@@ -306,12 +323,7 @@
       display: flex; align-items: center; justify-content: center; color: var(--blue);
     }
     .panel-head h2 { font-size: 14px; font-weight: 700; }
-
-    .panel-body {
-      flex: 1; overflow-y: auto; padding: 24px 22px;
-      display: flex; flex-direction: column; gap: 0;
-    }
-
+    .panel-body { flex: 1; overflow-y: auto; padding: 24px 22px; display: flex; flex-direction: column; gap: 0; }
     .panel-section { margin-bottom: 24px; }
     .panel-section:last-child { margin-bottom: 0; }
     .panel-section-title {
@@ -319,10 +331,8 @@
       color: var(--text3); margin-bottom: 10px;
       padding-bottom: 8px; border-bottom: 1px solid var(--border);
     }
-
     .panel-foot {
-      padding: 14px 22px;
-      border-top: 1px solid var(--border);
+      padding: 14px 22px; border-top: 1px solid var(--border);
       display: flex; justify-content: space-between; align-items: center;
       background: var(--s2); flex-shrink: 0;
     }
@@ -357,10 +367,11 @@
       border-radius: var(--r-sm); padding: 9px 12px;
       font-size: 12px; color: var(--red);
       display: none; align-items: center; gap: 7px;
+      margin-bottom: 16px;
     }
     .form-err.show { display: flex; }
 
-    /* ── Modal (for non-route dialogs) ───────────────────────── */
+    /* ── Modal ───────────────────────────────────────────────── */
     .ov { position:fixed; inset:0; background:rgba(0,0,0,.65); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:200; opacity:0; transition:opacity .18s; }
     .ov.show { opacity:1; }
     .modal { background:var(--s1); border:1px solid var(--border2); border-radius:14px; width:480px; max-width:95vw; max-height:90vh; display:flex; flex-direction:column; transform:translateY(12px) scale(.98); transition:transform .2s cubic-bezier(.16,1,.3,1); overflow:hidden; box-shadow:0 32px 64px rgba(0,0,0,.5); }
@@ -373,27 +384,77 @@
     .xbtn { background:none; border:none; cursor:pointer; color:var(--text3); padding:4px; border-radius:5px; display:flex; align-items:center; justify-content:center; transition:background .1s, color .1s; }
     .xbtn:hover { background:var(--s3); color:var(--text); }
 
-    /* ── Code ────────────────────────────────────────────────── */
-    .code { background:var(--s2); border:1px solid var(--border); border-radius:var(--r-sm); padding:12px 14px; font-family:var(--mono); font-size:12px; color:var(--blue); overflow-x:auto; white-space:pre; cursor:pointer; transition:border-color .14s, box-shadow .14s; }
+    /* ── Code blocks ─────────────────────────────────────────── */
+    .code {
+      background:var(--s2); border:1px solid var(--border); border-radius:var(--r-sm);
+      padding:12px 14px; font-family:var(--mono); font-size:12px; color:var(--blue);
+      overflow-x:auto; white-space:pre; cursor:pointer;
+      transition:border-color .14s, box-shadow .14s;
+      position:relative;
+    }
     [data-theme="light"] .code { background:#eef2ff; color:#1e3a8a; border-color:#c7d2fe; }
     .code:hover { border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-dim); }
     .code.copied { color:var(--green); border-color:var(--green); box-shadow:0 0 0 2px var(--green-dim); }
+    .code-wrap { position:relative; }
+    .code-copy-hint {
+      position:absolute; top:8px; right:8px;
+      font-size:10px; font-weight:600; color:var(--text3);
+      background:var(--s3); border:1px solid var(--border);
+      border-radius:4px; padding:2px 6px;
+      pointer-events:none; opacity:0;
+      transition:opacity .14s;
+    }
+    .code:hover + .code-copy-hint,
+    .code-wrap:hover .code-copy-hint { opacity:1; }
 
     /* ── Key row ─────────────────────────────────────────────── */
-    .key-row { display:flex; align-items:center; gap:10px; }
-    .key-lbl { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--text3); width:50px; flex-shrink:0; }
-    .key-val { font-family:var(--mono); font-size:11px; background:var(--s2); border:1px solid var(--border); border-radius:5px; padding:5px 9px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; transition:border-color .14s, box-shadow .14s; }
+    .key-row { display:flex; align-items:center; gap:8px; }
+    .key-lbl { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--text3); width:52px; flex-shrink:0; }
+    .key-val {
+      font-family:var(--mono); font-size:11px;
+      background:var(--s2); border:1px solid var(--border); border-radius:5px;
+      padding:5px 9px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+      cursor:pointer; transition:border-color .14s, box-shadow .14s;
+    }
     [data-theme="light"] .key-val { background:#eef2ff; }
     .key-val:hover { border-color:var(--blue); box-shadow:0 0 0 2px var(--blue-dim); }
     .key-val.copied { color:var(--green); border-color:var(--green); box-shadow:0 0 0 2px var(--green-dim); }
+    .key-copy-btn {
+      flex-shrink:0; background:var(--s2); border:1px solid var(--border); border-radius:5px;
+      padding:5px 7px; cursor:pointer; color:var(--text3);
+      display:flex; align-items:center; justify-content:center;
+      transition:background .14s, color .14s, border-color .14s;
+    }
+    .key-copy-btn:hover { background:var(--s3); color:var(--text); border-color:var(--border2); }
 
     /* ── Connect card ────────────────────────────────────────── */
     .connect-card { background:var(--s1); border:1px solid var(--border); border-radius:var(--r); overflow:hidden; }
-    .connect-head { padding:14px 18px; display:flex; align-items:center; gap:12px; background:linear-gradient(135deg, rgba(192,132,252,.06), rgba(79,142,247,.06)); border-bottom:1px solid var(--border); }
-    .connect-icon { width:34px; height:34px; border-radius:9px; flex-shrink:0; background:var(--purple-dim); border:1px solid rgba(192,132,252,.25); display:flex; align-items:center; justify-content:center; color:var(--purple); }
+    .connect-head {
+      padding:14px 18px; display:flex; align-items:center; gap:12px;
+      background:linear-gradient(135deg, rgba(192,132,252,.06), rgba(79,142,247,.06));
+      border-bottom:1px solid var(--border);
+    }
+    .connect-icon {
+      width:34px; height:34px; border-radius:9px; flex-shrink:0;
+      background:var(--purple-dim); border:1px solid rgba(192,132,252,.25);
+      display:flex; align-items:center; justify-content:center; color:var(--purple);
+    }
     .connect-title { font-size:13px; font-weight:700; }
     .connect-sub   { font-size:11px; color:var(--text2); margin-top:1px; }
-    .connect-body  { padding:14px 18px; display:flex; flex-direction:column; gap:10px; }
+    .connect-body  { padding:16px 18px; display:flex; flex-direction:column; gap:14px; }
+    .connect-step {
+      display:flex; gap:12px; align-items:flex-start;
+    }
+    .step-num {
+      width:20px; height:20px; border-radius:50%; flex-shrink:0;
+      background:var(--blue-dim); border:1px solid rgba(79,142,247,.3);
+      color:var(--blue); font-size:10px; font-weight:800;
+      display:flex; align-items:center; justify-content:center;
+      margin-top:1px;
+    }
+    .step-content { flex:1; min-width:0; }
+    .step-label { font-size:11px; font-weight:700; color:var(--text2); margin-bottom:6px; text-transform:uppercase; letter-spacing:.4px; }
+    .connect-divider { height:1px; background:var(--border); margin:0 -18px; }
 
     /* ── Toast ───────────────────────────────────────────────── */
     #toasts { position:fixed; top:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:999; pointer-events:none; }
@@ -419,6 +480,8 @@
     .rt-proxy  { background:var(--green-dim);  color:var(--green); }
     .rt-tunnel { background:var(--purple-dim); color:var(--purple); }
     .rt-none   { background:var(--red-dim);    color:var(--red); }
+    .live-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+    .live-label { font-size:12px; color:var(--text2); font-weight:500; }
 
     /* ── Zone bar ────────────────────────────────────────────── */
     .zone-bar { padding:11px 18px; background:var(--s2); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
@@ -426,6 +489,7 @@
 
     /* ── Settings ────────────────────────────────────────────── */
     .settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    @media (max-width: 800px) { .settings-grid { grid-template-columns: 1fr; } }
     .settings-body { padding:18px; display:flex; flex-direction:column; gap:14px; }
 
     /* ── Misc ────────────────────────────────────────────────── */
@@ -434,6 +498,13 @@
     @keyframes spin { to{transform:rotate(360deg)} }
     .cf-notice { padding:48px; text-align:center; color:var(--text3); line-height:1.8; }
     .cf-notice strong { color:var(--orange); font-weight:700; }
+    .info-banner {
+      background:var(--blue-dim); border:1px solid rgba(79,142,247,.2);
+      border-radius:var(--r-sm); padding:10px 14px;
+      font-size:12px; color:var(--text2);
+      display:flex; align-items:flex-start; gap:9px;
+    }
+    .info-banner i { color:var(--blue); flex-shrink:0; margin-top:1px; }
   </style>
 </head>
 <body>
@@ -441,7 +512,15 @@
 <!-- ── Topbar ───────────────────────────────────────────────── -->
 <header class="topbar">
   <div class="tb-brand">
-    <div class="logo-icon">🔗</div>
+    <div class="logo-icon">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1" y="5" width="3.5" height="6" rx="1.5" fill="white"/>
+        <rect x="11.5" y="5" width="3.5" height="6" rx="1.5" fill="white"/>
+        <path d="M4.5 8H11.5" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M4.5 6.5L11.5 6.5" stroke="white" stroke-width="1" stroke-linecap="round" opacity="0.5"/>
+        <path d="M4.5 9.5L11.5 9.5" stroke="white" stroke-width="1" stroke-linecap="round" opacity="0.5"/>
+      </svg>
+    </div>
     <span class="logo-word">Seamless</span>
   </div>
   <nav class="tb-nav">
@@ -501,12 +580,12 @@
         <div class="field">
           <label>Domain <span class="field-required">required</span></label>
           <input id="panel-domain" type="text" placeholder="app.example.com" autocomplete="off" spellcheck="false">
-          <span class="hint">The public hostname that will be matched against incoming HTTP Host headers</span>
+          <span class="hint">Matched against incoming HTTP Host headers</span>
         </div>
         <div class="field">
           <label>Upstream URL <span class="field-required">required</span></label>
           <input id="panel-upstream" type="text" placeholder="http://127.0.0.1:3000" autocomplete="off" spellcheck="false">
-          <span class="hint">TCP target — supports http://, https://, or bare host:port</span>
+          <span class="hint">Supports http://, https://, or bare host:port</span>
         </div>
       </div>
 
@@ -545,7 +624,7 @@
       <div class="hero-left">
         <div class="hero-badge"><i data-lucide="activity" width="10" height="10"></i> Live</div>
         <div class="hero-title">Dashboard</div>
-        <div class="hero-sub">Real-time overview of your proxy and tunnel status</div>
+        <div class="hero-sub">Real-time overview of proxy and tunnel status</div>
       </div>
       <div class="hero-actions">
         <button class="btn btn-ghost btn-sm" onclick="loadDashboard()">
@@ -570,8 +649,8 @@
         <div class="stat stat-purple">
           <div class="stat-head"><div class="stat-ic"><i data-lucide="cable" width="14" height="14"></i></div></div>
           <div class="stat-num" id="d-tunnels">—</div>
-          <div class="stat-label">Seamless Tunnels</div>
-          <div class="stat-sub" id="d-tunnels-sub">active connections</div>
+          <div class="stat-label">Active Tunnels</div>
+          <div class="stat-sub" id="d-tunnels-sub">HTTP + TCP</div>
         </div>
         <div class="stat stat-orange">
           <div class="stat-head"><div class="stat-ic"><i data-lucide="zap" width="14" height="14"></i></div></div>
@@ -625,7 +704,7 @@
       <div class="hero-left">
         <div class="hero-badge"><i data-lucide="arrow-left-right" width="10" height="10"></i> Routing</div>
         <div class="hero-title">Proxy Hosts</div>
-        <div class="hero-sub">Route domains to upstream services over raw TCP</div>
+        <div class="hero-sub">Route domains to upstream services — no tunnel client required</div>
       </div>
       <div class="hero-actions">
         <button class="btn btn-ghost btn-sm" onclick="checkHealth()" id="health-btn">
@@ -641,7 +720,11 @@
         <div class="card-header">
           <span class="card-title" id="routes-count-title"><i data-lucide="server" width="11" height="11"></i> Routes</span>
           <div class="flex">
-            <input type="text" id="route-search" placeholder="Filter…" style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 10px;font-size:12px;color:var(--text);outline:none;width:140px;font-family:inherit" oninput="filterRoutes()">
+            <input type="text" id="route-search" placeholder="Filter…"
+              style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 10px;font-size:12px;color:var(--text);outline:none;width:140px;font-family:inherit;transition:border-color .14s"
+              oninput="filterRoutes()"
+              onfocus="this.style.borderColor='var(--blue)'"
+              onblur="this.style.borderColor='var(--border)'">
           </div>
         </div>
         <table>
@@ -650,7 +733,7 @@
             <th style="width:44px"></th>
             <th>Domain</th>
             <th>Upstream</th>
-            <th style="width:100px">Created</th>
+            <th style="width:100px;display:none" class="col-created">Created</th>
             <th style="width:76px"></th>
           </tr></thead>
           <tbody id="routes-body"><tr><td colspan="6" class="empty-cell">
@@ -669,7 +752,7 @@
       <div class="hero-left">
         <div class="hero-badge"><i data-lucide="shield" width="10" height="10"></i> Post-Quantum</div>
         <div class="hero-title">Seamless Tunnels</div>
-        <div class="hero-sub">Active connections secured with X25519 + Kyber768 hybrid KEM</div>
+        <div class="hero-sub">Active connections — X25519 + ML-KEM-768 hybrid KEM, ChaCha20-Poly1305</div>
       </div>
       <div class="hero-actions">
         <span style="font-size:11px;color:var(--text3)">Auto-refreshes every 5s</span>
@@ -681,21 +764,51 @@
           <div class="connect-icon"><i data-lucide="terminal" width="16" height="16"></i></div>
           <div>
             <div class="connect-title">Quick Connect</div>
-            <div class="connect-sub">Copy and run to open a tunnel to this relay</div>
+            <div class="connect-sub">Connect a client to this relay in two steps</div>
           </div>
         </div>
         <div class="connect-body">
-          <div class="key-row">
-            <span class="key-lbl">X25519</span>
-            <span class="key-val tm" id="ki-x25519" onclick="copyEl(this)" title="Click to copy">—</span>
+          <div class="connect-step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <div class="step-label">Save relay keys — run once per machine</div>
+              <div class="key-row" style="margin-bottom:6px">
+                <span class="key-lbl">X25519</span>
+                <span class="key-val tm" id="ki-x25519" onclick="copyEl(this)" title="Click to copy">—</span>
+                <button class="key-copy-btn" onclick="copyEl(document.getElementById('ki-x25519'))" title="Copy X25519 key">
+                  <i data-lucide="copy" width="11" height="11"></i>
+                </button>
+              </div>
+              <div class="key-row">
+                <span class="key-lbl">ML-KEM</span>
+                <span class="key-val tm" id="ki-kem" onclick="copyEl(this)" title="Click to copy — 2336-char key">—</span>
+                <button class="key-copy-btn" onclick="copyEl(document.getElementById('ki-kem'))" title="Copy ML-KEM-768 key">
+                  <i data-lucide="copy" width="11" height="11"></i>
+                </button>
+              </div>
+            </div>
           </div>
-          <div class="key-row">
-            <span class="key-lbl">KEM</span>
-            <span class="key-val tm" id="ki-kem" onclick="copyEl(this)" title="Click to copy">—</span>
+
+          <div class="connect-divider"></div>
+
+          <div class="connect-step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <div class="step-label">Open a tunnel</div>
+              <div class="code-wrap">
+                <div class="code" id="ki-cmd" onclick="copyEl(this)" title="Click to copy">Loading…</div>
+                <span class="code-copy-hint">click to copy</span>
+              </div>
+            </div>
           </div>
-          <div class="code" id="ki-cmd" onclick="copyEl(this)" title="Click to copy">Loading…</div>
+
+          <div class="info-banner">
+            <i data-lucide="info" width="13" height="13"></i>
+            <span>Run <code style="font-family:var(--mono);font-size:11px;background:var(--s3);padding:1px 5px;border-radius:3px">seamless config init --relay … --x25519 … --kem …</code> to save keys locally — no flags needed after that.</span>
+          </div>
         </div>
       </div>
+
       <div class="card">
         <div class="card-header"><span class="card-title"><i data-lucide="cable" width="11" height="11"></i> Active Tunnels</span></div>
         <table>
@@ -719,10 +832,13 @@
         <div class="hero-sub">Last 500 requests through the HTTP ingress</div>
       </div>
       <div class="hero-actions">
-        <label class="f-inline" style="gap:8px">
-          <label class="toggle"><input type="checkbox" id="log-auto" checked onchange="toggleLogAuto()"><span class="slider"></span></label>
-          <span style="font-size:12px;color:var(--text2);font-weight:500">Live</span>
-        </label>
+        <div class="live-toggle" onclick="document.getElementById('log-auto').click()">
+          <label class="toggle" onclick="event.stopPropagation()">
+            <input type="checkbox" id="log-auto" checked onchange="toggleLogAuto()">
+            <span class="slider"></span>
+          </label>
+          <span class="live-label">Live</span>
+        </div>
       </div>
     </div>
     <div class="content">
@@ -734,7 +850,9 @@
             <option value="ok">Routed</option>
             <option value="502">502 errors</option>
           </select>
-          <button class="btn btn-ghost btn-sm" onclick="loadLogs()"><i data-lucide="refresh-cw" width="12" height="12"></i></button>
+          <button class="btn btn-ghost btn-sm" onclick="loadLogs()" title="Refresh">
+            <i data-lucide="refresh-cw" width="12" height="12"></i>
+          </button>
           <span style="margin-left:auto;font-size:11px;color:var(--text3)" id="log-count"></span>
         </div>
         <div style="overflow-x:auto;max-height:calc(100vh - 260px);overflow-y:auto">
@@ -747,7 +865,7 @@
             <tbody id="log-body"><tr><td colspan="6" class="empty-cell">
               <div class="ei"><i data-lucide="scroll-text" width="34" height="34"></i></div>
               <span class="et">No requests logged yet</span>
-              <span class="es">Send traffic through the ingress to see logs appear here</span>
+              <span class="es">Send traffic through the ingress to see logs here</span>
             </td></tr></tbody>
           </table>
         </div>
@@ -779,7 +897,7 @@
           <tbody id="cf-tunnels-body"><tr><td colspan="6" class="empty-cell">
             <div class="ei"><i data-lucide="cloud" width="34" height="34"></i></div>
             <span class="et">No tunnels yet</span>
-            <span class="es">Create a Cloudflare tunnel to expose services without opening ports</span>
+            <span class="es">Create a Cloudflare tunnel to expose services without opening firewall ports</span>
           </td></tr></tbody>
         </table>
       </div>
@@ -859,12 +977,31 @@
         <div class="card">
           <div class="card-header">
             <span class="card-title"><i data-lucide="shield" width="11" height="11"></i> Relay Identity</span>
-            <span class="badge b-purple">Post-Quantum</span>
+            <span class="badge b-purple">ML-KEM-768</span>
           </div>
           <div class="settings-body">
-            <div class="key-row"><span class="key-lbl">X25519</span><span class="key-val tm" id="s-x25519" onclick="copyEl(this)" title="Click to copy">—</span></div>
-            <div class="key-row"><span class="key-lbl">KEM</span><span class="key-val tm" id="s-kem" onclick="copyEl(this)" title="Click to copy">—</span></div>
-            <div class="code" id="s-cmd" onclick="copyEl(this)" title="Click to copy">Loading…</div>
+            <div class="key-row">
+              <span class="key-lbl">X25519</span>
+              <span class="key-val tm" id="s-x25519" onclick="copyEl(this)" title="Click to copy">—</span>
+              <button class="key-copy-btn" onclick="copyEl(document.getElementById('s-x25519'))" title="Copy X25519 key">
+                <i data-lucide="copy" width="11" height="11"></i>
+              </button>
+            </div>
+            <div class="key-row">
+              <span class="key-lbl">ML-KEM</span>
+              <span class="key-val tm" id="s-kem" onclick="copyEl(this)" title="Click to copy — 2336-char key">—</span>
+              <button class="key-copy-btn" onclick="copyEl(document.getElementById('s-kem'))" title="Copy ML-KEM-768 key">
+                <i data-lucide="copy" width="11" height="11"></i>
+              </button>
+            </div>
+            <div class="code-wrap">
+              <div class="code" id="s-cmd" onclick="copyEl(this)" title="Click to copy">Loading…</div>
+              <span class="code-copy-hint">click to copy</span>
+            </div>
+            <div class="hint" style="margin-top:2px">
+              <i data-lucide="lock" width="10" height="10" style="vertical-align:middle;margin-right:3px"></i>
+              Identity is persisted to <code style="font-family:var(--mono);font-size:10px">seamless-relay.json</code>. Back it up — losing it requires all clients to reconfigure.
+            </div>
           </div>
         </div>
       </div>
@@ -1132,8 +1269,7 @@ function renderLogs() {
   document.getElementById('log-body').innerHTML = rows.length ? rows.map(logRowHtml).join('') : '<tr><td colspan="6" class="empty-cell"><span class="t3">No matching requests</span></td></tr>';
 }
 function toggleLogAuto() {
-  var on = document.getElementById('log-auto').checked;
-  if (!on && logTimer) { clearInterval(logTimer); logTimer = null; }
+  // The shared 5s interval checks this checkbox before loading logs, so no timer management needed.
 }
 
 // ── Proxy Routes ────────────────────────────────────────────────
@@ -1177,8 +1313,6 @@ function renderRoutes(routes) {
   }).join('');
   lucide.createIcons();
 
-  // Wire up row buttons via event delegation on tbody.
-  // Remove any previously registered handlers first to prevent accumulation.
   if (tb._rlClick) tb.removeEventListener('click', tb._rlClick);
   if (tb._rlChange) tb.removeEventListener('change', tb._rlChange);
   tb._rlClick = routeTableHandler;
@@ -1196,8 +1330,8 @@ function routeTableHandler(e) {
     if (route) openRoutePanel(route);
   }
   if (delBtn) {
-    var id = delBtn.getAttribute('data-del');
-    deleteRoute(id);
+    var id2 = delBtn.getAttribute('data-del');
+    deleteRoute(id2);
   }
 }
 
@@ -1210,7 +1344,8 @@ function routeToggleHandler(e) {
 async function checkHealth() {
   var btn = document.getElementById('health-btn');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spin">↻</span> Checking…';
+  btn.innerHTML = '<i data-lucide="loader" width="13" height="13" class="spin"></i> Checking…';
+  lucide.createIcons();
   try {
     healthCache = await api('GET','/routes/health');
     renderRoutes([...routeMap.values()]);
@@ -1306,7 +1441,7 @@ function openCreateCfTunnel() {
 async function showTunnelToken(id, name) {
   var ov = document.createElement('div');
   ov.className = 'ov';
-  ov.innerHTML = '<div class="modal"><div class="modal-head"><h3>Token — '+esc(name)+'</h3><button class="xbtn" onclick="this.closest(\'.ov\').remove()"><i data-lucide="x" width="14" height="14"></i></button></div><div class="modal-body" id="tbody"><div style="text-align:center;padding:24px;color:var(--text3)">↻ Fetching…</div></div><div class="modal-foot"><button class="btn btn-ghost" onclick="this.closest(\'.ov\').remove()">Close</button></div></div>';
+  ov.innerHTML = '<div class="modal"><div class="modal-head"><h3>Token — '+esc(name)+'</h3><button class="xbtn" onclick="this.closest(\'.ov\').remove()"><i data-lucide="x" width="14" height="14"></i></button></div><div class="modal-body" id="tbody"><div style="text-align:center;padding:24px;color:var(--text3)"><span class="spin">↻</span> Fetching…</div></div><div class="modal-foot"><button class="btn btn-ghost" onclick="this.closest(\'.ov\').remove()">Close</button></div></div>';
   document.body.appendChild(ov);
   requestAnimationFrame(function(){ ov.classList.add('show'); });
   lucide.createIcons();
@@ -1346,7 +1481,7 @@ function onZoneChange() {
 
 async function loadDnsRecords(zoneId) {
   var tb = document.getElementById('dns-body');
-  tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><span class="spin">↻</span></td></tr>';
+  tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><span class="spin" style="font-size:18px;color:var(--text3)">↻</span></td></tr>';
   try {
     var recs = await api('GET','/cf/dns/'+zoneId);
     dnsMap.clear();
@@ -1373,7 +1508,7 @@ function openDnsModal(title, r, onSave) {
   document.body.appendChild(ov);
   requestAnimationFrame(function(){ ov.classList.add('show'); });
   lucide.createIcons();
-  setTimeout(function(){ ov.querySelector('input,select') && ov.querySelector('input,select').focus(); }, 60);
+  setTimeout(function(){ var f = ov.querySelector('input,select'); if (f) f.focus(); }, 60);
   ov.addEventListener('click', function(e){ if(e.target===ov) ov.remove(); });
   ov.querySelector('#dnsmok').addEventListener('click', function() { onSave(ov); });
 }
