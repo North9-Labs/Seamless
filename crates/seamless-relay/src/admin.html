@@ -802,7 +802,11 @@
             </div>
           </div>
 
-          <div class="info-banner">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <span id="ki-cipher"></span>
+            <span id="ki-auth"></span>
+          </div>
+          <div class="info-banner" style="margin-top:8px">
             <i data-lucide="info" width="13" height="13"></i>
             <span>Run <code style="font-family:var(--mono);font-size:11px;background:var(--s3);padding:1px 5px;border-radius:3px">seamless config init --relay … --x25519 … --kem …</code> to save keys locally — no flags needed after that.</span>
           </div>
@@ -1031,7 +1035,11 @@
               <div class="code" id="s-cmd" onclick="copyEl(this)" title="Click to copy">Loading…</div>
               <span class="code-copy-hint">click to copy</span>
             </div>
-            <div class="hint" style="margin-top:2px">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+              <span id="s-cipher"></span>
+              <span id="s-auth"></span>
+            </div>
+            <div class="hint" style="margin-top:6px">
               <i data-lucide="lock" width="10" height="10" style="vertical-align:middle;margin-right:3px"></i>
               Identity is persisted to <code style="font-family:var(--mono);font-size:10px">seamless-relay.json</code>. Back it up — losing it requires all clients to reconfigure.
             </div>
@@ -1488,6 +1496,15 @@ async function loadStatus() {
     ['ki-x25519','s-x25519'].forEach(function(id){var el=document.getElementById(id);if(el)el.textContent=s.x25519_pubkey;});
     ['ki-kem','s-kem'].forEach(function(id){var el=document.getElementById(id);if(el)el.textContent=s.kem_pubkey;});
     ['ki-cmd','s-cmd'].forEach(function(id){var el=document.getElementById(id);if(el)el.textContent=cmd;});
+    // Surface cipher and auth state in both key-info and status panels
+    var cipherBadge = s.cipher === 'aes256gcm'
+      ? '<span class="badge b-blue">AES-256-GCM (CNSA 2.0)</span>'
+      : '<span class="badge b-green">ChaCha20-Poly1305</span>';
+    var authBadge = s.auth_enabled
+      ? '<span class="badge b-green">Token auth enabled</span>'
+      : '<span class="badge b-yellow">Open (no auth)</span>';
+    ['ki-cipher','s-cipher'].forEach(function(id){var el=document.getElementById(id);if(el)el.innerHTML=cipherBadge;});
+    ['ki-auth','s-auth'].forEach(function(id){var el=document.getElementById(id);if(el)el.innerHTML=authBadge;});
   } catch(e) {}
 }
 
