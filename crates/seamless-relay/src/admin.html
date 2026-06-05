@@ -988,6 +988,27 @@
         </div>
         <div class="card">
           <div class="card-header">
+            <span class="card-title"><i data-lucide="lock" width="11" height="11"></i> Admin Token</span>
+            <span class="badge b-amber">Stored locally</span>
+          </div>
+          <div class="settings-body">
+            <div class="field">
+              <label>Bearer Token</label>
+              <input id="s-admin-token" type="password" placeholder="Token from --admin-token / SEAMLESS_ADMIN_TOKEN" autocomplete="off">
+              <span class="hint">Saved in browser localStorage — required to pause, resume, or disconnect tunnels</span>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-primary btn-sm" onclick="saveAdminToken()">
+                <i data-lucide="save" width="13" height="13"></i> Save Token
+              </button>
+              <button class="btn btn-ghost btn-sm" onclick="clearAdminToken()">
+                <i data-lucide="trash-2" width="13" height="13"></i> Clear
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
             <span class="card-title"><i data-lucide="shield" width="11" height="11"></i> Relay Identity</span>
             <span class="badge b-purple">ML-KEM-768</span>
           </div>
@@ -1068,6 +1089,13 @@ function nav(s) {
   if (s === 'settings')   { loadSettings(); loadStatus(); }
 }
 
+// ── Admin token (stored in localStorage, sent for /admin/* calls) ───
+function getAdminToken() { return localStorage.getItem('seamless-admin-token') || ''; }
+function setAdminToken(t) {
+  if (t) localStorage.setItem('seamless-admin-token', t);
+  else localStorage.removeItem('seamless-admin-token');
+}
+
 // ── API ─────────────────────────────────────────────────────────
 async function api(method, path, body) {
   var opts = { method: method, headers: {} };
@@ -1075,7 +1103,11 @@ async function api(method, path, body) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  var r = await fetch('/api' + path, opts);
+  var isAdmin = path.startsWith('/admin/');
+  var base = isAdmin ? '' : '/api';
+  var tok = getAdminToken();
+  if (isAdmin && tok) opts.headers['Authorization'] = 'Bearer ' + tok;
+  var r = await fetch(base + path, opts);
   if (r.status === 204) return null;
   var text = await r.text();
   if (!text) return null;
@@ -1610,6 +1642,23 @@ async function loadSettings() {
     if (s.cf_api_token_set) document.getElementById('s-token').placeholder = 'Current: '+s.cf_api_token_masked+' (leave blank to keep)';
     document.getElementById('s-account').value = s.cf_account_id || '';
   } catch(e) {}
+  var el = document.getElementById('s-admin-token');
+  if (el) el.placeholder = getAdminToken() ? '(token saved — paste new to replace)' : 'Token from --admin-token / SEAMLESS_ADMIN_TOKEN';
+}
+
+function saveAdminToken() {
+  var tok = document.getElementById('s-admin-token').value.trim();
+  setAdminToken(tok);
+  document.getElementById('s-admin-token').value = '';
+  toast(tok ? 'Admin token saved' : 'Admin token cleared');
+  loadSettings();
+}
+
+function clearAdminToken() {
+  setAdminToken('');
+  document.getElementById('s-admin-token').value = '';
+  toast('Admin token cleared');
+  loadSettings();
 }
 
 async function saveSettings() {
