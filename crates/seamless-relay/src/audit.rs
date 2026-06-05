@@ -25,36 +25,113 @@
 //! or checksumming is performed at this layer — use filesystem-level integrity
 //! tools (e.g. auditd, dm-integrity) for tamper-evidence requirements.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
+
+/// In-memory ring buffer of the most recent audit events.
+/// Capacity is 1 024 entries — enough for a monitoring poll interval of minutes
+/// at even high event rates without significant memory cost.
+const RING_CAPACITY: usize = 1_024;
+
+/// Shared, append-only in-memory ring of recent audit events.
+/// Cloning is O(1) (Arc clone).
+#[derive(Clone, Default)]
+pub struct AuditRing {
+    inner: Arc<Mutex<VecDeque<Value>>>,
+}
+
+impl AuditRing {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(VecDeque::with_capacity(RING_CAPACITY))),
+        }
+    }
+
+    pub async fn push(&self, event: Value) {
+        let mut buf = self.inner.lock().await;
+        if buf.len() >= RING_CAPACITY {
+            buf.pop_front();
+        }
+        buf.push_back(event);
+    }
+
+    /// Return up to `limit` events whose `ts` field is >= `since_ts`.
+    /// Events are returned in chronological order (oldest first).
+    pub async fn query(&self, since_ts: Option<i64>, limit: usize) -> Vec<Value> {
+        let buf = self.inner.lock().await;
+        buf.iter()
+            .filter(|ev| {
+                if let Some(since) = since_ts {
+                    ev.get("ts").and_then(Value::as_i64).unwrap_or(0) >= since
+                } else {
+                    true
+                }
+            })
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+}
 
 /// A cheap clone handle to the audit log writer background task.
 /// Sending is fire-and-forget; the background task handles all I/O.
 #[derive(Clone)]
 pub struct AuditLog {
     tx: Option<mpsc::Sender<Value>>,
+    /// In-memory ring buffer of recent events — queryable via `GET /admin/audit`.
+    pub ring: AuditRing,
 }
 
 impl AuditLog {
     /// Returns a no-op handle when `--audit-log` is not configured.
+    /// The in-memory ring is still active (events are always kept in memory).
     pub fn disabled() -> Self {
-        Self { tx: None }
+        Self { tx: None, ring: AuditRing::new() }
     }
 
     /// Spawn the background writer task and return a handle.
     /// `path` is the base path (e.g. `/var/log/seamless/audit.jsonl`).
     pub fn start(path: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel::<Value>(8_192);
+        let ring = AuditRing::new();
         tokio::spawn(writer_task(path, rx));
-        Self { tx: Some(tx) }
+        Self { tx: Some(tx), ring }
     }
 
     /// Emit an audit event.  Non-blocking — drops the event if the channel is full
     /// (logged as a warning in the writer task).
+    /// Always writes to the in-memory ring regardless of whether file logging is enabled.
+    /// Must be called from within a Tokio runtime context.
     pub fn emit(&self, event: Value) {
+        // Push to the in-memory ring.
+        // Use try_lock for the fast path (lock usually uncontended); if the lock is
+        // held, spawn a task so the caller is never blocked.  In both cases the ring
+        // is updated without a blocking `await` on the hot path.
+        let ev_clone = event.clone();
+        let pushed_inline = {
+            let ring = &self.ring;
+            match ring.inner.try_lock() {
+                Ok(mut buf) => {
+                    if buf.len() >= RING_CAPACITY {
+                        buf.pop_front();
+                    }
+                    buf.push_back(ev_clone);
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+        if !pushed_inline {
+            let ring = self.ring.clone();
+            let ev2 = event.clone();
+            tokio::spawn(async move { ring.push(ev2).await });
+        }
+
         if let Some(ref tx) = self.tx {
             if tx.try_send(event).is_err() {
                 tracing::warn!("audit-log: channel full — event dropped (disk I/O too slow?)");
@@ -245,6 +322,40 @@ mod tests {
         // Should not panic
         log.emit(serde_json::json!({"event": "test"}));
         assert!(!log.is_enabled());
+    }
+
+    #[tokio::test]
+    async fn audit_ring_query_all() {
+        let ring = AuditRing::new();
+        ring.push(serde_json::json!({"event": "a", "ts": 100})).await;
+        ring.push(serde_json::json!({"event": "b", "ts": 200})).await;
+        ring.push(serde_json::json!({"event": "c", "ts": 300})).await;
+
+        let all = ring.query(None, 100).await;
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0]["event"], "a");
+        assert_eq!(all[2]["event"], "c");
+    }
+
+    #[tokio::test]
+    async fn audit_ring_query_since() {
+        let ring = AuditRing::new();
+        ring.push(serde_json::json!({"event": "old", "ts": 50})).await;
+        ring.push(serde_json::json!({"event": "new", "ts": 200})).await;
+
+        let recent = ring.query(Some(100), 100).await;
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0]["event"], "new");
+    }
+
+    #[tokio::test]
+    async fn audit_ring_respects_limit() {
+        let ring = AuditRing::new();
+        for i in 0..10 {
+            ring.push(serde_json::json!({"event": "x", "ts": i})).await;
+        }
+        let capped = ring.query(None, 3).await;
+        assert_eq!(capped.len(), 3);
     }
 
     #[tokio::test]

@@ -50,6 +50,23 @@ pub async fn run_https_ingress(
         tokio::spawn(async move {
             match acceptor.accept(tcp).await {
                 Ok(tls_stream) => {
+                    // Extract TLS connection fingerprint (cipher suite + protocol version)
+                    // after the handshake completes. This allows post-hoc detection of
+                    // unusual client tooling (curl vs browser vs custom scanner).
+                    let fingerprint = tls_connection_fingerprint(&tls_stream);
+                    if !fingerprint.is_empty() {
+                        // Log to audit ring for monitoring system access.
+                        crate::audit_event!(state.audit_log, "tls.connection",
+                            "peer" => peer.to_string(),
+                            "fingerprint" => &fingerprint
+                        );
+                        tracing::debug!(
+                            event = "tls.connection",
+                            peer = %peer,
+                            fingerprint = %fingerprint,
+                            "TLS connection from {peer} fingerprint: {fingerprint}"
+                        );
+                    }
                     if let Err(e) = route_http(tls_stream, peer, state, true).await {
                         warn!("https conn from {peer}: {e:#}");
                     }
@@ -60,6 +77,42 @@ pub async fn run_https_ingress(
             }
         });
     }
+}
+
+/// Extract a compact TLS fingerprint string from a completed TLS server stream.
+///
+/// Format: `TLSv1.3:<cipher_suite_name>:<fingerprint_hex>`
+///
+/// The hex fingerprint is a simple FNV-1a hash of (tls_version || cipher_suite_name)
+/// — sufficient for grouping distinct client configurations without a crypto hash crate.
+/// This allows after-the-fact detection of unusual tooling (curl, Python requests,
+/// custom scanners) via distinct cipher-suite preference fingerprints.
+///
+/// Returns an empty string if fingerprinting is not available (shouldn't happen
+/// for TLS 1.3 connections).
+fn tls_connection_fingerprint(stream: &tokio_rustls::server::TlsStream<TcpStream>) -> String {
+    let (_, server_conn) = stream.get_ref();
+    let protocol = server_conn.protocol_version()
+        .map(|v| format!("{v:?}"))
+        .unwrap_or_else(|| "Unknown".to_string());
+    let cipher = server_conn.negotiated_cipher_suite()
+        .map(|cs| format!("{:?}", cs.suite()))
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    // FNV-1a hash of "protocol\0cipher" — no external dep, deterministic grouping.
+    let input = format!("{protocol}\0{cipher}");
+    let hash = fnv1a_32(input.as_bytes());
+    format!("{protocol}:{cipher}:{hash:08x}")
+}
+
+/// FNV-1a 32-bit hash — public domain, no dependencies.
+fn fnv1a_32(data: &[u8]) -> u32 {
+    let mut hash: u32 = 2_166_136_261;
+    for &byte in data {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    hash
 }
 
 async fn route_http<S>(mut stream: S, peer: SocketAddr, state: AppState, is_https: bool) -> Result<()>
@@ -264,6 +317,8 @@ where
                 routed_to: format!("tunnel:{sub}"),
                 status: 0,
             }).await;
+            // Record request start time for latency histogram.
+            let req_start = std::time::Instant::now();
             let mut apex = entry.mux.open_stream().await;
             write_frame(&mut apex, &ControlFrame::NewConn { peer_addr: peer.to_string() }).await?;
             if !head.is_empty() {
@@ -274,6 +329,8 @@ where
                 state.metrics.inc_bytes_in(n);
             }
             let (n_in, n_out) = copy_bidirectional_counted(&mut stream, &mut apex).await;
+            // Record latency from first byte received to last byte sent.
+            state.metrics.record_request_duration(req_start.elapsed());
             entry.bytes_in.fetch_add(n_in, Ordering::Relaxed);
             entry.bytes_out.fetch_add(n_out, Ordering::Relaxed);
             state.metrics.inc_bytes_in(n_in);

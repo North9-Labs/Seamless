@@ -6,7 +6,7 @@ use subtle::ConstantTimeEq;
 
 use axum::{
     Router,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, Request, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
@@ -59,6 +59,8 @@ pub async fn start_admin(
         .route("/admin/tunnels/{id}/stats", get(admin_tunnel_stats))
         .route("/admin/tunnels/{id}/pause", post(admin_pause_tunnel))
         .route("/admin/tunnels/{id}/resume", post(admin_resume_tunnel))
+        // Audit log query endpoint — returns recent in-memory audit events as JSONL
+        .route("/admin/audit", get(admin_audit_query))
         // Logs + route health (logs protected by admin token)
         .route("/api/logs", get(get_logs))
         .route("/api/routes/health", get(health_routes))
@@ -685,6 +687,42 @@ struct BulkDisconnectReq {
     client_ip: String,
 }
 
+// ── Audit log query ───────────────────────────────────────────────────────────
+
+/// Query parameters for `GET /admin/audit`.
+#[derive(Deserialize, Default)]
+struct AuditQueryParams {
+    /// Return only events with `ts` >= this Unix timestamp (seconds).
+    since: Option<i64>,
+    /// Maximum number of events to return (default 100, max 1 024).
+    limit: Option<usize>,
+}
+
+/// `GET /admin/audit?since=<unix_ts>&limit=100`
+///
+/// Query the in-memory ring buffer of recent audit events (last 1 024).
+/// Returns events as a JSON array, filtered by `since` and capped by `limit`.
+/// Intended for monitoring systems that need to pull audit events without
+/// direct filesystem access to the audit JSONL file.
+///
+/// Protected by the admin Bearer token (same as other admin endpoints).
+async fn admin_audit_query(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<AuditQueryParams>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let limit = params.limit.unwrap_or(100).min(1_024);
+    let events = s.audit_log.ring.query(params.since, limit).await;
+    Json(serde_json::json!({
+        "count": events.len(),
+        "events": events,
+    }))
+    .into_response()
+}
+
 // ── Health / Ready / Metrics (public, used by load balancers) ─────────────────
 
 async fn health_check(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -724,6 +762,7 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 
     let uptime_secs = s.start_time.elapsed().as_secs();
     let version = env!("CARGO_PKG_VERSION");
+    let latency_histogram = s.metrics.request_duration.render_prometheus("seamless_request_duration_seconds");
     let body = format!(
         "# HELP seamless_info Relay version info\n\
          # TYPE seamless_info gauge\n\
@@ -760,7 +799,10 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
          seamless_subdomain_invalid_total {subdomain_invalid}\n\
          # HELP seamless_tunnel_per_ip_rejections_total Total connections rejected due to per-IP tunnel limit\n\
          # TYPE seamless_tunnel_per_ip_rejections_total counter\n\
-         seamless_tunnel_per_ip_rejections_total {tunnel_per_ip_rejections}\n"
+         seamless_tunnel_per_ip_rejections_total {tunnel_per_ip_rejections}\n\
+         # HELP seamless_request_duration_seconds Proxied HTTP request duration from first byte received to last byte sent\n\
+         # TYPE seamless_request_duration_seconds histogram\n\
+         {latency_histogram}"
     );
 
     (
