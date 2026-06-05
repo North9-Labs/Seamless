@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::{anyhow, Result};
 use seamless_common::{write_frame, ControlFrame};
@@ -314,17 +315,52 @@ where
                 return Ok(());
             }
 
+            // DDoS protection — per-tunnel token bucket check.
+            if !entry.ddos.check().await {
+                let blocked = entry.ddos.blocked_count.load(Ordering::Relaxed);
+                tracing::warn!(
+                    event = "ddos.blocked",
+                    tunnel_id = %sub,
+                    client_ip = %peer.ip(),
+                    blocked_total = blocked,
+                    "DDoS rate limit hit on tunnel '{sub}' from {}",
+                    peer.ip()
+                );
+                crate::audit_event!(state.audit_log, "ddos.blocked",
+                    "tunnel_id" => sub.as_str(),
+                    "client_ip" => peer.ip().to_string()
+                );
+                let resp = if entry.ddos.challenge_mode.load(Ordering::Relaxed) {
+                    format!(
+                        "HTTP/1.1 429 Too Many Requests\r\n\
+                         Retry-After: 1\r\n\
+                         X-RateLimit-Limit: {}\r\n\
+                         X-RateLimit-Remaining: 0\r\n\
+                         Content-Length: 25\r\n\
+                         Content-Type: text/plain\r\n\
+                         Connection: close\r\n\r\n\
+                         rate limit exceeded\n",
+                        entry.ddos.get_rps()
+                    )
+                } else {
+                    error_response("429 Too Many Requests", "rate limit exceeded\n", is_https)
+                };
+                stream.write_all(resp.as_bytes()).await.ok();
+                return Ok(());
+            }
+
             state.metrics.inc_connections();
             logs::push(&state.log_buffer, LogEntry {
                 ts: unix_now(),
-                method,
-                path,
-                host,
+                method: method.clone(),
+                path: path.clone(),
+                host: host.clone(),
                 routed_to: format!("tunnel:{sub}"),
                 status: 0,
             }).await;
             // Record request start time for latency histogram.
             let req_start = std::time::Instant::now();
+            let client_ip_str = peer.ip().to_string();
             let mut apex = entry.mux.open_stream().await;
             write_frame(&mut apex, &ControlFrame::NewConn { peer_addr: peer.to_string() }).await?;
             if !head.is_empty() {
@@ -336,11 +372,36 @@ where
             }
             let (n_in, n_out) = copy_bidirectional_counted(&mut stream, &mut apex).await;
             // Record latency from first byte received to last byte sent.
-            state.metrics.record_request_duration(req_start.elapsed());
+            let duration = req_start.elapsed();
+            state.metrics.record_request_duration(duration);
             entry.bytes_in.fetch_add(n_in, Ordering::Relaxed);
             entry.bytes_out.fetch_add(n_out, Ordering::Relaxed);
             state.metrics.inc_bytes_in(n_in);
             state.metrics.inc_bytes_out(n_out);
+
+            // Log the request to the per-tunnel ring buffer (last 100).
+            {
+                use std::time::UNIX_EPOCH;
+                let ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let log = crate::tunnel::RequestLog {
+                    timestamp: ts,
+                    method,
+                    path,
+                    status_code: 0, // HTTP-level status not visible at proxy layer
+                    duration_ms: duration.as_millis() as u64,
+                    client_ip: client_ip_str,
+                    bytes: n_in + n_out,
+                };
+                let mut ring = entry.recent_requests.lock().await;
+                if ring.len() >= 100 {
+                    ring.pop_front();
+                }
+                ring.push_back(log);
+            }
+
             return Ok(());
         }
     }

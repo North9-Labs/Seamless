@@ -283,6 +283,101 @@ impl BackendEntry {
     }
 }
 
+// ── DDoS protection per tunnel ────────────────────────────────────────────────
+
+/// Token-bucket based DDoS protection for an individual tunnel.
+/// A separate bucket tracks per-request rate, distinct from the global per-IP
+/// new-connection rate limiter.
+pub struct DDoSProtection {
+    /// When false the bucket is never consulted.
+    pub enabled: AtomicBool,
+    /// Allowed requests per second (refill rate). Stored *1000 for u64 atomics.
+    rps_atomic: AtomicU64,
+    /// Bucket capacity (burst). Stored *1000 for u64 atomics.
+    burst_atomic: AtomicU64,
+    /// Monotonically increasing count of blocked requests.
+    pub blocked_count: AtomicU64,
+    /// When true: instead of silently dropping, return 429 with Retry-After.
+    pub challenge_mode: AtomicBool,
+    // ── Token-bucket internal state (protected by a Mutex) ─────────────────
+    bucket: tokio::sync::Mutex<TokenBucketState>,
+}
+
+struct TokenBucketState {
+    tokens: f64,
+    last_refill: Instant,
+}
+
+impl DDoSProtection {
+    pub fn new(rps: u32, burst: u32) -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            rps_atomic: AtomicU64::new(rps as u64),
+            burst_atomic: AtomicU64::new(burst as u64),
+            blocked_count: AtomicU64::new(0),
+            challenge_mode: AtomicBool::new(true),
+            bucket: tokio::sync::Mutex::new(TokenBucketState {
+                tokens: burst as f64,
+                last_refill: Instant::now(),
+            }),
+        }
+    }
+
+    pub fn get_rps(&self) -> u32 {
+        self.rps_atomic.load(AtomicOrdering::Relaxed) as u32
+    }
+    pub fn set_rps(&self, v: u32) {
+        self.rps_atomic.store(v as u64, AtomicOrdering::Relaxed);
+    }
+    pub fn get_burst(&self) -> u32 {
+        self.burst_atomic.load(AtomicOrdering::Relaxed) as u32
+    }
+    pub fn set_burst(&self, v: u32) {
+        self.burst_atomic.store(v as u64, AtomicOrdering::Relaxed);
+    }
+
+    /// Attempt to consume one token.  Returns `true` if the request is allowed.
+    /// Refills the bucket based on elapsed time since the last call.
+    pub async fn check(&self) -> bool {
+        if !self.enabled.load(AtomicOrdering::Relaxed) {
+            return true;
+        }
+        let rps = self.get_rps();
+        if rps == 0 {
+            return true;
+        }
+        let burst = self.get_burst();
+        let mut state = self.bucket.lock().await;
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.last_refill).as_secs_f64();
+        state.last_refill = now;
+        // Refill
+        state.tokens = (state.tokens + elapsed * rps as f64).min(burst as f64);
+        if state.tokens >= 1.0 {
+            state.tokens -= 1.0;
+            true
+        } else {
+            self.blocked_count.fetch_add(1, AtomicOrdering::Relaxed);
+            false
+        }
+    }
+}
+
+// ── Per-request log entry ─────────────────────────────────────────────────────
+
+/// One logged request through this tunnel (last 100 kept in a ring).
+#[derive(Clone, serde::Serialize)]
+pub struct RequestLog {
+    /// Wall-clock time of the request (Unix seconds).
+    pub timestamp: u64,
+    pub method: String,
+    pub path: String,
+    pub status_code: u16,
+    pub duration_ms: u64,
+    pub client_ip: String,
+    pub bytes: u64,
+}
+
 /// Per-tunnel state shared between the tunnel task and the admin API.
 pub struct TunnelEntry {
     pub mux: Arc<SeamMux>,
@@ -306,6 +401,10 @@ pub struct TunnelEntry {
     pub backends: Arc<tokio::sync::RwLock<Vec<Arc<BackendEntry>>>>,
     /// Atomic counter for round-robin backend selection.
     pub rr_counter: Arc<AtomicU64>,
+    /// Per-tunnel DDoS protection (token bucket).
+    pub ddos: Arc<DDoSProtection>,
+    /// Ring buffer of the last 100 requests through this tunnel.
+    pub recent_requests: Arc<tokio::sync::Mutex<VecDeque<RequestLog>>>,
 }
 
 impl TunnelEntry {
@@ -819,6 +918,8 @@ async fn serve_http(
         disconnect_tx: Arc::new(Mutex::new(Some(disconnect_tx))),
         backends: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         rr_counter: Arc::new(AtomicU64::new(0)),
+        ddos: Arc::new(DDoSProtection::new(100, 200)),
+        recent_requests: Arc::new(tokio::sync::Mutex::new(VecDeque::with_capacity(100))),
     });
 
     {
@@ -1048,6 +1149,8 @@ async fn serve_tcp(
         disconnect_tx: Arc::new(Mutex::new(Some(disconnect_tx))),
         backends: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         rr_counter: Arc::new(AtomicU64::new(0)),
+        ddos: Arc::new(DDoSProtection::new(100, 200)),
+        recent_requests: Arc::new(tokio::sync::Mutex::new(VecDeque::with_capacity(100))),
     });
     tunnels.lock().await.insert(tunnel_key.clone(), entry);
 

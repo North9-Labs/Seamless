@@ -536,6 +536,9 @@
     <div class="tb-item" data-s="logs" onclick="nav('logs')">
       <i data-lucide="scroll-text" width="13" height="13"></i> Logs
     </div>
+    <div class="tb-item" data-s="ddos" onclick="nav('ddos')">
+      <i data-lucide="shield-alert" width="13" height="13"></i> DDoS
+    </div>
     <div class="tb-div"></div>
     <div class="tb-item tb-cf" data-s="cf-tunnels" onclick="nav('cf-tunnels')">
       <i data-lucide="cloud" width="13" height="13"></i> CF Tunnels
@@ -846,15 +849,58 @@
             <th>Public URL</th>
             <th style="width:70px">Type</th>
             <th style="width:80px">Uptime</th>
-            <th style="width:100px">In / Out</th>
+            <th style="width:110px">In / Out</th>
             <th style="width:26px"></th>
             <th style="width:26px"></th>
-            <th style="width:110px"></th>
+            <th style="width:140px"></th>
           </tr></thead>
           <tbody id="seamless-tunnels-body"><tr><td colspan="7" class="empty-cell">
             <div class="ei"><i data-lucide="cable" width="34" height="34"></i></div>
             <span class="et">No active tunnels</span>
             <span class="es">Connect a Seamless client using the command above</span>
+          </td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── DDoS Protection ────────────────────────────────────── -->
+  <div id="sec-ddos" class="section">
+    <div class="hero">
+      <div class="hero-left">
+        <div class="hero-badge"><i data-lucide="shield-alert" width="10" height="10"></i> Security</div>
+        <div class="hero-title">DDoS Protection</div>
+        <div class="hero-sub">Per-tunnel token bucket rate limiting — enable to block excessive request rates</div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn btn-ghost btn-sm" onclick="loadDdosPage()">
+          <i data-lucide="refresh-cw" width="13" height="13"></i> Refresh
+        </button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+          <span class="card-title"><i data-lucide="trending-up" width="11" height="11"></i> Active Tunnels — Last 60 min</span>
+        </div>
+        <canvas id="ddos-chart" style="width:100%;display:block;height:80px"></canvas>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title"><i data-lucide="shield-alert" width="11" height="11"></i> Tunnel DDoS Status</span>
+        </div>
+        <table>
+          <thead><tr>
+            <th>Tunnel</th>
+            <th style="width:80px">Enabled</th>
+            <th style="width:90px">Rate Limit</th>
+            <th style="width:90px">Total Blocked</th>
+            <th style="width:100px">Blocked/hr</th>
+            <th style="width:80px">Threat</th>
+          </tr></thead>
+          <tbody id="ddos-tunnels-body"><tr><td colspan="6" class="empty-cell">
+            <div class="ei"><i data-lucide="shield" width="34" height="34"></i></div>
+            <span class="et">No active tunnels</span>
           </td></tr></tbody>
         </table>
       </div>
@@ -1115,6 +1161,7 @@ function nav(s) {
   if (s === 'proxy')      loadRoutes();
   if (s === 'tunnels')    { loadSeamlessTunnels(); loadStatus(); clearInterval(tunnelTimer); tunnelTimer = setInterval(loadSeamlessTunnels, 5000); }
   else { clearInterval(tunnelTimer); tunnelTimer = null; }
+  if (s === 'ddos')       loadDdosPage();
   if (s === 'cf-tunnels') loadCfTunnels();
   if (s === 'dns')        loadZones();
   if (s === 'settings')   { loadSettings(); loadStatus(); }
@@ -1483,15 +1530,17 @@ function renderTunnelRows(rows) {
     var pauseBtn = sub ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="'+(t.paused?'resumeTunnel':'pauseTunnel')+'(\''+esc(sub)+'\')" title="'+(t.paused?'Resume':'Pause')+'"><i data-lucide="'+(t.paused?'play':'pause')+'" width="11" height="11"></i></button>' : '';
     var disconnBtn = sub ? '<button class="btn btn-danger btn-sm btn-icon" onclick="disconnectTunnel(\''+esc(sub)+'\')" title="Disconnect"><i data-lucide="x" width="11" height="11"></i></button>' : '';
     var copyBtn = t.url ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="copyTunnelUrl(this,\''+esc(t.url)+'\')" title="Copy URL"><i data-lucide="copy" width="11" height="11"></i></button>' : '';
+    var reqBtn = sub ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="toggleRecentRequests(this,\''+esc(sub)+'\')" title="Recent Requests"><i data-lucide="list" width="11" height="11"></i></button>' : '';
+    var ddosBadge = t.ddos_enabled ? '<span class="badge b-red" style="font-size:9px;padding:1px 4px">DDoS</span>' : '';
     var ipHint = t.client_ip ? '<div style="font-size:10px;color:var(--text3);margin-top:1px">'+esc(t.client_ip)+'</div>' : '';
-    return '<tr>'
+    return '<tr id="tr-'+esc(sub)+'">'
       + '<td class="tm">' + esc(t.url) + ipHint + '</td>'
-      + '<td><span class="badge '+(t.kind==='HTTP'?'b-green':'b-blue')+'">'+t.kind+'</span>'+(t.paused?' <span class="badge b-amber">Paused</span>':'')+'</td>'
+      + '<td><span class="badge '+(t.kind==='HTTP'?'b-green':'b-blue')+'">'+t.kind+'</span>'+(t.paused?' <span class="badge b-amber">Paused</span>':'')+' '+ddosBadge+'</td>'
       + '<td class="t3">'+uptime+'</td>'
-      + '<td class="t3 tm">↓'+fmtBytes(t.bytes_in)+' ↑'+fmtBytes(t.bytes_out)+'</td>'
+      + '<td class="t3 tm" style="font-size:11px">↓'+fmtBytes(t.bytes_in)+'<br>↑'+fmtBytes(t.bytes_out)+'</td>'
       + '<td>'+copyBtn+'</td>'
       + '<td>'+pauseBtn+'</td>'
-      + '<td><div class="flex">'+disconnBtn+'</div></td>'
+      + '<td><div class="flex">'+reqBtn+''+disconnBtn+'</div></td>'
       + '</tr>';
   }).join('');
   lucide.createIcons();
@@ -1658,10 +1707,10 @@ async function loadSeamlessTunnels() {
     _updateTunnelAgo();
     _allTunnelRows = [];
     d.http.forEach(function(t) {
-      _allTunnelRows.push({url:t.url, kind:'HTTP', subdomain:t.subdomain, paused:t.paused, connected_at:t.connected_at, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0, client_ip:t.client_ip||''});
+      _allTunnelRows.push({url:t.url, kind:'HTTP', subdomain:t.subdomain, paused:t.paused, connected_at:t.connected_at, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0, client_ip:t.client_ip||'', ddos_enabled:t.ddos_enabled||false});
     });
     d.tcp.forEach(function(t) {
-      _allTunnelRows.push({url:t.url, kind:'TCP', subdomain:t.key||null, paused:false, connected_at:t.connected_at||null, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0, client_ip:t.client_ip||''});
+      _allTunnelRows.push({url:t.url, kind:'TCP', subdomain:t.key||null, paused:false, connected_at:t.connected_at||null, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0, client_ip:t.client_ip||'', ddos_enabled:false});
     });
     // Re-apply any active search filter after refresh.
     filterTunnels();
@@ -1680,6 +1729,148 @@ async function disconnectTunnel(sub) {
   if (!confirm('Disconnect tunnel "'+sub+'"? The client will reconnect automatically.')) return;
   try { await api('DELETE','/admin/tunnels/'+sub); toast('Tunnel disconnected'); loadSeamlessTunnels(); }
   catch(e) { toast(e.message,'err'); }
+}
+
+// ── Per-tunnel recent requests panel ─────────────────────────────
+async function toggleRecentRequests(btn, sub) {
+  var tb = document.getElementById('seamless-tunnels-body');
+  var existingRow = document.getElementById('req-row-' + sub);
+  if (existingRow) {
+    existingRow.remove();
+    btn.style.color = '';
+    btn.style.borderColor = '';
+    return;
+  }
+  btn.style.color = 'var(--blue)';
+  btn.style.borderColor = 'var(--blue)';
+  var tr = document.getElementById('tr-' + sub);
+  if (!tr) return;
+  var insertRow = document.createElement('tr');
+  insertRow.id = 'req-row-' + sub;
+  insertRow.innerHTML = '<td colspan="7" style="padding:0;border-top:none"><div style="padding:10px 14px;background:var(--s1);border-top:1px solid var(--border)"><div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;display:flex;align-items:center;gap:6px"><i data-lucide="list" width="12" height="12"></i> Recent Requests <span id="req-count-'+esc(sub)+'" style="color:var(--text3);font-weight:400"></span></div><div id="req-body-'+esc(sub)+'"><span style="color:var(--text3);font-size:11px">Loading…</span></div></div></td>';
+  tr.after(insertRow);
+  lucide.createIcons();
+  try {
+    var d = await api('GET', '/api/tunnels/'+sub+'/requests');
+    var reqs = d.requests || [];
+    var countEl = document.getElementById('req-count-'+sub);
+    if (countEl) countEl.textContent = '('+reqs.length+' shown)';
+    var bodyEl = document.getElementById('req-body-'+sub);
+    if (!bodyEl) return;
+    if (!reqs.length) {
+      bodyEl.innerHTML = '<span style="color:var(--text3);font-size:11px">No requests logged yet for this tunnel</span>';
+      return;
+    }
+    bodyEl.innerHTML = '<table style="width:100%;font-size:11px"><thead><tr style="color:var(--text3)"><th style="text-align:left;padding:2px 8px 4px 0;font-weight:500">Time</th><th style="text-align:left;padding:2px 8px 4px 0;font-weight:500">Method</th><th style="text-align:left;padding:2px 8px 4px 0;font-weight:500">Path</th><th style="text-align:left;padding:2px 8px 4px 0;font-weight:500">Duration</th><th style="text-align:left;padding:2px 8px 4px 0;font-weight:500">Bytes</th><th style="text-align:left;padding:2px 0 4px 0;font-weight:500">Client IP</th></tr></thead><tbody>'
+      + reqs.map(function(r){
+          var t = new Date(r.timestamp*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+          var p = (r.path||'/').length > 40 ? (r.path||'/').slice(0,40)+'…' : (r.path||'/');
+          return '<tr><td style="padding:2px 8px 2px 0;color:var(--text3)">'+t+'</td>'
+            +'<td style="padding:2px 8px 2px 0"><span class="lm '+methodCls(r.method)+'">'+esc(r.method||'?')+'</span></td>'
+            +'<td style="padding:2px 8px 2px 0;font-family:var(--mono);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(r.path||'/')+'">'+esc(p)+'</td>'
+            +'<td style="padding:2px 8px 2px 0;color:var(--text3)">'+r.duration_ms+'ms</td>'
+            +'<td style="padding:2px 8px 2px 0;color:var(--text3)">'+fmtBytes(r.bytes||0)+'</td>'
+            +'<td style="padding:2px 0 2px 0;color:var(--text3);font-family:var(--mono);font-size:10px">'+esc(r.client_ip||'')+'</td>'
+            +'</tr>';
+        }).join('')
+      +'</tbody></table>';
+  } catch(e) {
+    var bodyEl2 = document.getElementById('req-body-'+sub);
+    if (bodyEl2) bodyEl2.innerHTML = '<span style="color:var(--red);font-size:11px">'+esc(e.message)+'</span>';
+  }
+}
+
+// ── DDoS Protection Page ─────────────────────────────────────────
+async function loadDdosPage() {
+  var tb = document.getElementById('ddos-tunnels-body');
+  var chart = document.getElementById('ddos-chart');
+  if (tb) tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><span class="t3">Loading…</span></td></tr>';
+  try {
+    var tunnelData = await api('GET', '/tunnels');
+    var allTunnels = (tunnelData.http||[]).map(function(t){return {id:t.subdomain,url:t.url,kind:'HTTP'};});
+    if (!allTunnels.length) {
+      if (tb) tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><div class="ei"><i data-lucide="shield" width="34" height="34"></i></div><span class="et">No active tunnels</span></td></tr>';
+      lucide.createIcons();
+      return;
+    }
+    // Fetch DDoS config for each tunnel.
+    var rows = await Promise.all(allTunnels.map(async function(t) {
+      try {
+        var d = await api('GET', '/api/tunnels/'+t.id+'/ddos');
+        return Object.assign({}, t, d);
+      } catch(e) { return Object.assign({}, t, {enabled:false, blocked_count:0, blocked_last_hour:0, requests_per_second_limit:100, burst_size:200, challenge_mode:true}); }
+    }));
+    if (tb) {
+      tb.innerHTML = rows.map(function(r) {
+        var blockRate = r.blocked_last_hour || 0;
+        var threatBadge = blockRate === 0 ? '<span class="badge b-green" style="font-size:9px">LOW</span>'
+          : blockRate < 50 ? '<span class="badge b-amber" style="font-size:9px">MEDIUM</span>'
+          : '<span class="badge b-red" style="font-size:9px">HIGH</span>';
+        return '<tr>'
+          + '<td class="tm t2" style="font-size:11px">'+esc(r.url||r.id)+'</td>'
+          + '<td><label class="toggle" style="margin:0"><input type="checkbox" '+(r.enabled?'checked':'')+' onchange="toggleDdos(\''+esc(r.id)+'\',this.checked)"><span class="slider"></span></label></td>'
+          + '<td class="t3">'+(r.enabled?r.requests_per_second_limit+' req/s':'—')+'</td>'
+          + '<td class="t3">'+r.blocked_count+'</td>'
+          + '<td class="t3">'+blockRate+'</td>'
+          + '<td>'+threatBadge+'</td>'
+          + '</tr>';
+      }).join('');
+      lucide.createIcons();
+    }
+    // Draw 24h blocks chart using stats history
+    if (chart) {
+      try {
+        var histData = await api('GET', '/stats/history');
+        drawDdosChart(chart, histData.history || []);
+      } catch(e) { drawDdosChart(chart, []); }
+    }
+  } catch(e) {
+    if (tb) tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><span style="color:var(--red)">'+esc(e.message)+'</span></td></tr>';
+  }
+}
+
+async function toggleDdos(tunnelId, enabled) {
+  try {
+    await api('PUT', '/api/tunnels/'+tunnelId+'/ddos', {enabled: enabled});
+    toast('DDoS protection ' + (enabled ? 'enabled' : 'disabled') + ' for ' + tunnelId);
+  } catch(e) { toast(e.message, 'err'); loadDdosPage(); }
+}
+
+function drawDdosChart(canvas, history) {
+  var ctx = canvas.getContext('2d');
+  var dpr = window.devicePixelRatio || 1;
+  var w = canvas.offsetWidth || 600;
+  var h = 80;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!history.length) {
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text3').trim() || '#888';
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No history yet', w/2, h/2 + 4);
+    return;
+  }
+  var vals = history.map(function(s){ return s.active_tunnels || 0; });
+  var maxVal = Math.max.apply(null, vals) || 1;
+  var isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+  var lineColor = isDark ? '#f87171' : '#dc2626';
+  var fillColor = isDark ? 'rgba(248,113,113,0.15)' : 'rgba(220,38,38,0.1)';
+  var pad = {top:6, bottom:6, left:2, right:2};
+  var iw = w - pad.left - pad.right, ih = h - pad.top - pad.bottom;
+  var n = vals.length;
+  ctx.beginPath();
+  vals.forEach(function(v, i) {
+    var x = pad.left + (n === 1 ? iw/2 : i/(n-1)*iw);
+    var y = pad.top + ih - (v/maxVal*ih);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = lineColor; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.stroke();
+  var lx = pad.left + (n===1?iw/2:(n-1)/(n-1)*iw);
+  var fx = pad.left + (n===1?iw/2:0);
+  ctx.lineTo(lx, pad.top+ih); ctx.lineTo(fx, pad.top+ih); ctx.closePath();
+  ctx.fillStyle = fillColor; ctx.fill();
 }
 
 async function loadStatus() {

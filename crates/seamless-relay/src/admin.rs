@@ -51,6 +51,10 @@ pub async fn start_admin(
         .route("/api/tunnels", get(list_seamless_tunnels))
         // Single tunnel details by ID
         .route("/api/tunnels/{id}", get(get_seamless_tunnel))
+        // DDoS protection config per tunnel
+        .route("/api/tunnels/{id}/ddos", get(get_ddos_config).put(set_ddos_config))
+        // Per-tunnel request log (last N requests)
+        .route("/api/tunnels/{id}/requests", get(get_tunnel_requests))
         // Stats history ring buffer
         .route("/api/stats/history", get(stats_history_handler))
         // Seamless tunnels — admin management (protected by Bearer token)
@@ -335,10 +339,13 @@ async fn list_seamless_tunnels(
                 "url": url,
                 "paused": entry.paused.load(Ordering::Relaxed),
                 "connected_at": entry.connected_at,
+                "uptime_secs": now - entry.connected_at,
                 "duration_secs": now - entry.connected_at,
                 "client_ip": entry.client_ip,
                 "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
                 "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
+                "ddos_enabled": entry.ddos.enabled.load(Ordering::Relaxed),
+                "ddos_blocked": entry.ddos.blocked_count.load(Ordering::Relaxed),
             })
         })
         .collect();
@@ -417,6 +424,9 @@ async fn get_seamless_tunnel(
             "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
             "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
             "paused": entry.paused.load(Ordering::Relaxed),
+            "ddos_enabled": entry.ddos.enabled.load(Ordering::Relaxed),
+            "ddos_blocked": entry.ddos.blocked_count.load(Ordering::Relaxed),
+            "ddos_rps": entry.ddos.get_rps(),
         })
     };
     Json(json).into_response()
@@ -1180,6 +1190,152 @@ async fn remove_custom_domain(
         return not_found().into_response();
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+// ── DDoS Protection per tunnel ────────────────────────────────────────────────
+
+/// `GET /api/tunnels/{id}/ddos` — return DDoS protection config and blocked count.
+async fn get_ddos_config(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    let ddos = &entry.ddos;
+    // Count blocks from last hour using the audit ring.
+    let one_hour_ago = unix_now() - 3600;
+    let recent_blocks = s.audit_log.ring.query(Some(one_hour_ago), 1024).await
+        .into_iter()
+        .filter(|e| {
+            e.get("event").and_then(|v| v.as_str()) == Some("ddos.blocked")
+                && e.get("tunnel_id").and_then(|v| v.as_str()) == Some(id.as_str())
+        })
+        .count() as u64;
+    Json(serde_json::json!({
+        "tunnel_id": id,
+        "enabled": ddos.enabled.load(Ordering::Relaxed),
+        "requests_per_second_limit": ddos.get_rps(),
+        "burst_size": ddos.get_burst(),
+        "challenge_mode": ddos.challenge_mode.load(Ordering::Relaxed),
+        "blocked_count": ddos.blocked_count.load(Ordering::Relaxed),
+        "blocked_last_hour": recent_blocks,
+    })).into_response()
+}
+
+#[derive(Deserialize)]
+struct DdosConfigReq {
+    enabled: Option<bool>,
+    requests_per_second_limit: Option<u32>,
+    burst_size: Option<u32>,
+    challenge_mode: Option<bool>,
+}
+
+/// `PUT /api/tunnels/{id}/ddos` — update DDoS protection settings.
+async fn set_ddos_config(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<DdosConfigReq>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+
+    use std::sync::atomic::Ordering as AOrd2;
+    let ddos = &entry.ddos;
+
+    if let Some(v) = req.enabled {
+        ddos.enabled.store(v, AOrd2::Relaxed);
+    }
+    if let Some(v) = req.requests_per_second_limit {
+        ddos.set_rps(v.max(1));
+    }
+    if let Some(v) = req.burst_size {
+        ddos.set_burst(v.max(1));
+    }
+    if let Some(v) = req.challenge_mode {
+        ddos.challenge_mode.store(v, AOrd2::Relaxed);
+    }
+
+    let new_enabled = ddos.enabled.load(AOrd2::Relaxed);
+    let new_rps = ddos.get_rps();
+    let new_burst = ddos.get_burst();
+    let new_challenge = ddos.challenge_mode.load(AOrd2::Relaxed);
+
+    tracing::info!(
+        event = "ddos.config_updated",
+        tunnel_id = %id,
+        enabled = new_enabled,
+        rps = new_rps,
+        burst = new_burst,
+        "DDoS config updated for tunnel '{id}'"
+    );
+    crate::audit_event!(s.audit_log, "ddos.config_updated",
+        "tunnel_id" => id.as_str(),
+        "enabled" => new_enabled,
+        "rps" => new_rps,
+        "burst" => new_burst
+    );
+
+    Json(serde_json::json!({
+        "tunnel_id": id,
+        "enabled": new_enabled,
+        "requests_per_second_limit": new_rps,
+        "burst_size": new_burst,
+        "challenge_mode": new_challenge,
+        "blocked_count": ddos.blocked_count.load(Ordering::Relaxed),
+    })).into_response()
+}
+
+// ── Per-tunnel request log ─────────────────────────────────────────────────────
+
+#[derive(Deserialize, Default)]
+struct RequestLogParams {
+    /// How many recent requests to return (default 20, max 100).
+    limit: Option<usize>,
+}
+
+/// `GET /api/tunnels/{id}/requests` — return the last N proxied requests.
+async fn get_tunnel_requests(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(params): Query<RequestLogParams>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    let limit = params.limit.unwrap_or(20).min(100);
+    let ring = entry.recent_requests.lock().await;
+    let requests: Vec<_> = ring.iter().rev().take(limit).cloned().collect();
+    Json(serde_json::json!({
+        "tunnel_id": id,
+        "count": requests.len(),
+        "requests": requests,
+    })).into_response()
 }
 
 // ── Feature 3: Load Balancing — Backend Management ────────────────────────────
