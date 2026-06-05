@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use instant_acme::{
-    Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier,
-    LetsEncrypt, NewAccount, NewOrder, OrderStatus,
+    Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt,
+    NewAccount, NewOrder, OrderStatus,
 };
 use rcgen::{CertificateParams, DistinguishedName, KeyPair};
 use tokio::sync::RwLock;
@@ -91,7 +91,10 @@ impl AcmeClient {
             .context("creating ACME order")?;
 
         // Process authorizations (challenges).
-        let authorizations = order.authorizations().await.context("fetching authorizations")?;
+        let authorizations = order
+            .authorizations()
+            .await
+            .context("fetching authorizations")?;
         let mut dns_records_to_clean: Vec<(String, String, String)> = Vec::new(); // (zone_id, record_id, domain)
 
         for authz in &authorizations {
@@ -155,7 +158,10 @@ impl AcmeClient {
             }
 
             // Notify ACME server that we're ready.
-            order.set_challenge_ready(&challenge.url).await.context("setting challenge ready")?;
+            order
+                .set_challenge_ready(&challenge.url)
+                .await
+                .context("setting challenge ready")?;
         }
 
         // Poll order until ready or invalid.
@@ -179,19 +185,28 @@ impl AcmeClient {
 
         // Generate CSR key pair and serialize CSR.
         let key_pair = KeyPair::generate().context("generating key pair")?;
-        let mut params = CertificateParams::new(self.config.domains.clone())
-            .context("creating cert params")?;
+        let mut params =
+            CertificateParams::new(self.config.domains.clone()).context("creating cert params")?;
         params.distinguished_name = DistinguishedName::new();
-        let csr = params.serialize_request(&key_pair).context("serializing CSR")?;
+        let csr = params
+            .serialize_request(&key_pair)
+            .context("serializing CSR")?;
         let csr_der: &[u8] = csr.der();
 
         // Finalize the order (submit CSR).
-        order.finalize(csr_der).await.context("finalizing ACME order")?;
+        order
+            .finalize(csr_der)
+            .await
+            .context("finalizing ACME order")?;
 
         // Poll for the certificate to become available.
         let cert_chain_pem = loop {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            match order.certificate().await.context("downloading certificate")? {
+            match order
+                .certificate()
+                .await
+                .context("downloading certificate")?
+            {
                 Some(pem) => break pem,
                 None => continue,
             }
@@ -202,7 +217,10 @@ impl AcmeClient {
         // Clean up DNS records.
         if let Some(ref cf_token) = self.config.cloudflare_api_token {
             for (zone_id, record_id, domain) in &dns_records_to_clean {
-                if let Err(e) = self.cf_delete_txt_record(cf_token, zone_id, record_id).await {
+                if let Err(e) = self
+                    .cf_delete_txt_record(cf_token, zone_id, record_id)
+                    .await
+                {
                     warn!(
                         event = "acme.dns01.cleanup_failed",
                         domain = %domain,
@@ -285,12 +303,15 @@ impl AcmeClient {
             let json = tokio::fs::read_to_string(&creds_path)
                 .await
                 .context("reading account credentials")?;
-            let creds: AccountCredentials = serde_json::from_str(&json)
-                .context("parsing account credentials")?;
+            let creds: AccountCredentials =
+                serde_json::from_str(&json).context("parsing account credentials")?;
             let account = Account::from_credentials(creds)
                 .await
                 .context("loading ACME account from credentials")?;
-            info!(event = "acme.account_loaded", "loaded existing ACME account");
+            info!(
+                event = "acme.account_loaded",
+                "loaded existing ACME account"
+            );
             return Ok(account);
         }
 
@@ -382,10 +403,14 @@ impl AcmeClient {
         Ok((zone_id, record_id))
     }
 
-    async fn cf_delete_txt_record(&self, token: &str, zone_id: &str, record_id: &str) -> Result<()> {
-        let url = format!(
-            "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}"
-        );
+    async fn cf_delete_txt_record(
+        &self,
+        token: &str,
+        zone_id: &str,
+        record_id: &str,
+    ) -> Result<()> {
+        let url =
+            format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}");
         let resp = self
             .http
             .delete(&url)
@@ -416,7 +441,9 @@ fn days_until_expiry(pem: &str) -> Option<i64> {
     }
 
     use base64::Engine;
-    let der = base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()).ok()?;
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(b64.as_bytes())
+        .ok()?;
 
     // Search for UTCTime (0x17) or GeneralizedTime (0x18) — find the second one (notAfter).
     let mut found_times: Vec<&[u8]> = Vec::new();
@@ -483,19 +510,31 @@ pub fn spawn_renewal_task(
         loop {
             interval.tick().await;
             if client.needs_renewal().await {
-                info!(event = "acme.renewal_check", "certificate renewal needed — starting ACME");
+                info!(
+                    event = "acme.renewal_check",
+                    "certificate renewal needed — starting ACME"
+                );
                 match client.obtain_certificate().await {
                     Ok((cert, key)) => {
-                        info!(event = "acme.cert_renewed", "certificate renewed successfully");
+                        info!(
+                            event = "acme.cert_renewed",
+                            "certificate renewed successfully"
+                        );
                         crate::audit_event!(client.audit_log, "acme.cert_renewed", "domain" => "");
                         let _ = cert_tx.send((cert, key)).await;
                     }
                     Err(e) => {
-                        warn!(event = "acme.renewal_failed", "certificate renewal failed: {e:#}");
+                        warn!(
+                            event = "acme.renewal_failed",
+                            "certificate renewal failed: {e:#}"
+                        );
                     }
                 }
             } else {
-                info!(event = "acme.renewal_check", "certificate valid — no renewal needed");
+                info!(
+                    event = "acme.renewal_check",
+                    "certificate valid — no renewal needed"
+                );
             }
         }
     });
@@ -524,7 +563,10 @@ pub async fn run_acme_http_server(
     loop {
         let (mut stream, _peer) = match listener.accept().await {
             Ok(v) => v,
-            Err(e) => { warn!("ACME HTTP accept: {e}"); continue; }
+            Err(e) => {
+                warn!("ACME HTTP accept: {e}");
+                continue;
+            }
         };
         let tokens = tokens.clone();
         tokio::spawn(async move {
@@ -554,10 +596,12 @@ pub async fn run_acme_http_server(
                         body.len(), body
                     )
                 } else {
-                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_string()
                 }
             } else {
-                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_string()
             };
 
             let _ = stream.write_all(response.as_bytes()).await;

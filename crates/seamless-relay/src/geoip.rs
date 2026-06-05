@@ -58,32 +58,33 @@ impl GeoipFilter {
                 }
                 None
             }
-            Some(path) => {
-                match maxminddb::Reader::open_readfile(path) {
-                    Ok(r) => {
-                        tracing::info!(
-                            "geoip: loaded database from {path} ({} blocked country/ies: {})",
-                            blocked_countries.len(),
-                            blocked_countries
-                                .iter()
-                                .cloned()
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        );
-                        Some(r)
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "geoip: could not open database at {path}: {e} — \
-                             geo-blocking is DISABLED"
-                        );
-                        None
-                    }
+            Some(path) => match maxminddb::Reader::open_readfile(path) {
+                Ok(r) => {
+                    tracing::info!(
+                        "geoip: loaded database from {path} ({} blocked country/ies: {})",
+                        blocked_countries.len(),
+                        blocked_countries
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    Some(r)
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(
+                        "geoip: could not open database at {path}: {e} — \
+                             geo-blocking is DISABLED"
+                    );
+                    None
+                }
+            },
         };
 
-        Ok(Self { reader, blocked_countries })
+        Ok(Self {
+            reader,
+            blocked_countries,
+        })
     }
 
     /// Disabled filter — no DB, no blocked countries.  All IPs pass.
@@ -133,9 +134,7 @@ impl GeoipFilter {
 
     fn lookup_country(&self, reader: &maxminddb::Reader<Vec<u8>>, ip: IpAddr) -> Option<String> {
         let record: maxminddb::geoip2::Country = reader.lookup(ip).ok()?;
-        let cc = record
-            .country?
-            .iso_code?;
+        let cc = record.country?.iso_code?;
         Some(cc.to_uppercase())
     }
 }

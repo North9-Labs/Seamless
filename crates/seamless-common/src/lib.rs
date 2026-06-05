@@ -34,21 +34,14 @@ pub enum ControlFrame {
         kind: TunnelKind,
     },
     /// Relay → Client. Sent once after a successful Register.
-    Registered {
-        public_url: String,
-    },
+    Registered { public_url: String },
     /// Relay → Client. Sent on the *data stream* as its preamble (not control).
     /// Carried here so there is a single `ControlFrame` enum to decode.
-    NewConn {
-        peer_addr: String,
-    },
+    NewConn { peer_addr: String },
     /// Either side. Non-fatal keepalive.
     Ping,
     /// Either side. Fatal — close the connection after sending.
-    Error {
-        code: u16,
-        message: String,
-    },
+    Error { code: u16, message: String },
 }
 
 #[derive(Debug, Error)]

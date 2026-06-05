@@ -68,9 +68,7 @@ impl Histogram {
         let sum_secs = sum_us as f64 / 1_000_000.0;
         for (i, &bound) in self.bounds.iter().enumerate() {
             let bucket_count = self.buckets[i].load(Ordering::Relaxed);
-            out.push_str(&format!(
-                "{name}_bucket{{le=\"{bound}\"}} {bucket_count}\n"
-            ));
+            out.push_str(&format!("{name}_bucket{{le=\"{bound}\"}} {bucket_count}\n"));
         }
         out.push_str(&format!("{name}_bucket{{le=\"+Inf\"}} {count}\n"));
         out.push_str(&format!("{name}_count {count}\n"));
@@ -149,7 +147,8 @@ impl Metrics {
     }
 
     pub fn inc_tunnel_cap_rejections(&self) {
-        self.tunnel_cap_rejections_total.fetch_add(1, Ordering::Relaxed);
+        self.tunnel_cap_rejections_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_subdomain_invalid(&self) {
@@ -157,7 +156,8 @@ impl Metrics {
     }
 
     pub fn inc_tunnel_per_ip_rejections(&self) {
-        self.tunnel_per_ip_rejections_total.fetch_add(1, Ordering::Relaxed);
+        self.tunnel_per_ip_rejections_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_ws_connections(&self) {
@@ -186,10 +186,10 @@ mod tests {
     #[test]
     fn histogram_counts_correctly() {
         let h = Histogram::new(LATENCY_BOUNDS);
-        h.observe(0.003);  // under 0.005
-        h.observe(0.01);   // exactly 0.01
-        h.observe(0.5);    // 0.5
-        h.observe(5.0);    // over all bounds
+        h.observe(0.003); // under 0.005
+        h.observe(0.01); // exactly 0.01
+        h.observe(0.5); // 0.5
+        h.observe(5.0); // over all bounds
 
         assert_eq!(h.count.load(Ordering::Relaxed), 4);
         // bucket[0] = le 0.005: only 0.003

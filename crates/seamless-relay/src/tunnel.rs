@@ -1,14 +1,14 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use seamless_common::{read_frame, write_frame, ControlFrame, TunnelKind, PROTOCOL_VERSION};
-use seam_protocol::tunnel::{SeamMux, SeamStream};
 use rand::Rng;
+use seam_protocol::tunnel::{SeamMux, SeamStream};
+use seamless_common::{read_frame, write_frame, ControlFrame, TunnelKind, PROTOCOL_VERSION};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -30,7 +30,9 @@ pub struct SubdomainPrefix {
 
 impl SubdomainPrefix {
     pub fn new(prefix: Option<String>) -> Self {
-        Self { prefix: Arc::new(prefix) }
+        Self {
+            prefix: Arc::new(prefix),
+        }
     }
 
     /// Returns `Err` with a human-readable message if `sub` violates the prefix rule.
@@ -137,7 +139,9 @@ impl SubdomainBlocklist {
                 let mut set = std::collections::HashSet::new();
                 for line in text.lines() {
                     let line = line.trim().to_lowercase();
-                    if line.is_empty() || line.starts_with('#') { continue; }
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
                     set.insert(line);
                 }
                 let count = set.len();
@@ -499,7 +503,11 @@ impl AuthPolicy {
             let eq: u8 = cbytes[..cmp_len].ct_eq(&tbytes[..cmp_len]).unwrap_u8();
             hit |= eq & len_match;
         }
-        if hit == 1 { Ok(()) } else { Err(AuthError::Invalid) }
+        if hit == 1 {
+            Ok(())
+        } else {
+            Err(AuthError::Invalid)
+        }
     }
 }
 
@@ -551,7 +559,11 @@ impl WebhookCtx {
         });
     }
 
-    async fn deliver(client: &reqwest::Client, url: &str, body: &serde_json::Value) -> Result<(), anyhow::Error> {
+    async fn deliver(
+        client: &reqwest::Client,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), anyhow::Error> {
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
             client.post(url).json(body).send(),
@@ -567,13 +579,34 @@ impl WebhookCtx {
 
 pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
     let ConnCtx {
-        tunnels, tcp_ports, base_domain, http_port, https_port, auth, metrics, client_ip,
-        webhook_url, http_client, max_tunnels_per_ip, rate_limiter, max_tunnels,
-        reserved_subdomains, subdomain_prefix, subdomain_length, blocklist,
-        ip_denylist, audit_log, tunnel_keepalive, custom_domains,
-        allow_custom_domains, custom_domain_allowlist,
+        tunnels,
+        tcp_ports,
+        base_domain,
+        http_port,
+        https_port,
+        auth,
+        metrics,
+        client_ip,
+        webhook_url,
+        http_client,
+        max_tunnels_per_ip,
+        rate_limiter,
+        max_tunnels,
+        reserved_subdomains,
+        subdomain_prefix,
+        subdomain_length,
+        blocklist,
+        ip_denylist,
+        audit_log,
+        tunnel_keepalive,
+        custom_domains,
+        allow_custom_domains,
+        custom_domain_allowlist,
     } = ctx;
-    let webhook = WebhookCtx { url: webhook_url, client: http_client };
+    let webhook = WebhookCtx {
+        url: webhook_url,
+        client: http_client,
+    };
     let t0 = Instant::now();
 
     // IP deny list check — performed before any resource-intensive processing.
@@ -605,21 +638,15 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
     // open across thousands of connections.  By requiring the full frame to
     // arrive within 5 seconds, we limit each slow loris connection to exactly
     // 5 seconds of server resources rather than 30.
-    let (mut control, frame) = tokio::time::timeout(
-        Duration::from_secs(30),
-        async {
-            let mut control = mux
-                .accept_stream()
-                .await
-                .ok_or_else(|| anyhow!("client dropped before opening control stream"))?;
-
-            // Slow loris guard: require the complete Register frame within 5 s.
-            let frame = match tokio::time::timeout(
-                Duration::from_secs(5),
-                read_frame(&mut control),
-            )
+    let (mut control, frame) = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut control = mux
+            .accept_stream()
             .await
-            {
+            .ok_or_else(|| anyhow!("client dropped before opening control stream"))?;
+
+        // Slow loris guard: require the complete Register frame within 5 s.
+        let frame =
+            match tokio::time::timeout(Duration::from_secs(5), read_frame(&mut control)).await {
                 Ok(Ok(f)) => f,
                 Ok(Err(e)) => {
                     return Err(anyhow!("reading register frame: {e:#}"));
@@ -636,14 +663,17 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
                 }
             };
 
-            Ok::<_, anyhow::Error>((control, frame))
-        },
-    )
+        Ok::<_, anyhow::Error>((control, frame))
+    })
     .await
     .map_err(|_| anyhow!("registration timeout from {client_ip}"))??;
 
     let (kind, token) = match frame {
-        ControlFrame::Register { version, kind, token } => {
+        ControlFrame::Register {
+            version,
+            kind,
+            token,
+        } => {
             if version != PROTOCOL_VERSION {
                 write_frame(
                     &mut control,
@@ -677,9 +707,15 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
             "client_ip" => &client_ip,
             "reason" => msg
         );
-        write_frame(&mut control, &ControlFrame::Error { code, message: msg.into() })
-            .await
-            .ok();
+        write_frame(
+            &mut control,
+            &ControlFrame::Error {
+                code,
+                message: msg.into(),
+            },
+        )
+        .await
+        .ok();
         return Err(anyhow!("auth denied: {msg}"));
     }
 
@@ -694,10 +730,15 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
             client_ip = %client_ip,
             "rate limited connection from {client_ip}"
         );
-        write_frame(&mut control, &ControlFrame::Error {
-            code: 429,
-            message: "too many connections from your IP — try again later".into(),
-        }).await.ok();
+        write_frame(
+            &mut control,
+            &ControlFrame::Error {
+                code: 429,
+                message: "too many connections from your IP — try again later".into(),
+            },
+        )
+        .await
+        .ok();
         return Err(anyhow!("rate limited: {client_ip}"));
     }
 
@@ -722,9 +763,7 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
                 &mut control,
                 &ControlFrame::Error {
                     code: 429,
-                    message: format!(
-                        "tunnel limit reached for your IP ({max_tunnels_per_ip} max)"
-                    ),
+                    message: format!("tunnel limit reached for your IP ({max_tunnels_per_ip} max)"),
                 },
             )
             .await
@@ -760,10 +799,44 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     match kind {
         TunnelKind::Http { subdomain } => {
-            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook, &reserved_subdomains, &subdomain_prefix, subdomain_length, &blocklist, &audit_log, tunnel_keepalive, custom_domains, allow_custom_domains, &custom_domain_allowlist).await
+            serve_http(
+                mux,
+                control,
+                tunnels,
+                &base_domain,
+                http_port,
+                https_port,
+                subdomain,
+                metrics,
+                &client_ip,
+                webhook,
+                &reserved_subdomains,
+                &subdomain_prefix,
+                subdomain_length,
+                &blocklist,
+                &audit_log,
+                tunnel_keepalive,
+                custom_domains,
+                allow_custom_domains,
+                &custom_domain_allowlist,
+            )
+            .await
         }
         TunnelKind::Tcp { port } => {
-            serve_tcp(mux, control, tunnels, tcp_ports, &base_domain, port, metrics, &client_ip, webhook, &audit_log, tunnel_keepalive).await
+            serve_tcp(
+                mux,
+                control,
+                tunnels,
+                tcp_ports,
+                &base_domain,
+                port,
+                metrics,
+                &client_ip,
+                webhook,
+                &audit_log,
+                tunnel_keepalive,
+            )
+            .await
         }
     }
 }
@@ -818,7 +891,15 @@ async fn serve_http(
                 reason = %e,
                 "invalid subdomain '{requested}' from {client_ip}: {e}"
             );
-            write_frame(&mut control, &ControlFrame::Error { code: 400, message: e.to_string() }).await.ok();
+            write_frame(
+                &mut control,
+                &ControlFrame::Error {
+                    code: 400,
+                    message: e.to_string(),
+                },
+            )
+            .await
+            .ok();
             return Err(anyhow!("invalid subdomain '{requested}': {e}"));
         }
         // Check against operator-configured reservation list.
@@ -834,12 +915,16 @@ async fn serve_http(
                 &mut control,
                 &ControlFrame::Error {
                     code: 403,
-                    message: format!("subdomain '{requested}' is reserved and cannot be registered"),
+                    message: format!(
+                        "subdomain '{requested}' is reserved and cannot be registered"
+                    ),
                 },
             )
             .await
             .ok();
-            return Err(anyhow!("reserved subdomain '{requested}' blocked for {client_ip}"));
+            return Err(anyhow!(
+                "reserved subdomain '{requested}' blocked for {client_ip}"
+            ));
         }
         // Enforce optional naming-convention prefix.
         if let Err(e) = prefix.check(requested) {
@@ -880,7 +965,9 @@ async fn serve_http(
             )
             .await
             .ok();
-            return Err(anyhow!("blocklisted subdomain '{requested}' blocked for {client_ip}"));
+            return Err(anyhow!(
+                "blocklisted subdomain '{requested}' blocked for {client_ip}"
+            ));
         }
     }
     let sub = subdomain.unwrap_or_else(|| random_subdomain_with_length(subdomain_length));
@@ -956,7 +1043,13 @@ async fn serve_http(
         );
     }
 
-    write_frame(&mut control, &ControlFrame::Registered { public_url: url.clone() }).await?;
+    write_frame(
+        &mut control,
+        &ControlFrame::Registered {
+            public_url: url.clone(),
+        },
+    )
+    .await?;
     let connected_at = crate::store::unix_now();
     info!(
         event = "tunnel.open",
@@ -982,7 +1075,11 @@ async fn serve_http(
     }));
 
     // Use configurable keepalive interval; fall back to 25s if disabled (keepalive=0).
-    let keepalive_secs = if tunnel_keepalive > 0 { tunnel_keepalive } else { 25 };
+    let keepalive_secs = if tunnel_keepalive > 0 {
+        tunnel_keepalive
+    } else {
+        25
+    };
     let mut ping_interval = tokio::time::interval(Duration::from_secs(keepalive_secs));
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ping_interval.tick().await; // discard first immediate tick
@@ -1107,7 +1204,13 @@ async fn serve_tcp(
     };
 
     let url = format!("tcp://{base_domain}:{port}");
-    write_frame(&mut control, &ControlFrame::Registered { public_url: url.clone() }).await?;
+    write_frame(
+        &mut control,
+        &ControlFrame::Registered {
+            public_url: url.clone(),
+        },
+    )
+    .await?;
     let connected_at = crate::store::unix_now();
     info!(
         event = "tunnel.open",
@@ -1164,7 +1267,11 @@ async fn serve_tcp(
     });
 
     // Use configurable keepalive interval; fall back to 25s if disabled (keepalive=0).
-    let keepalive_secs = if tunnel_keepalive > 0 { tunnel_keepalive } else { 25 };
+    let keepalive_secs = if tunnel_keepalive > 0 {
+        tunnel_keepalive
+    } else {
+        25
+    };
     let mut ping_interval = tokio::time::interval(Duration::from_secs(keepalive_secs));
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ping_interval.tick().await; // discard first immediate tick
@@ -1322,7 +1429,13 @@ pub async fn forward_to_tunnel(
     metrics: Metrics,
 ) -> Result<()> {
     use std::sync::atomic::Ordering;
-    write_frame(&mut apex, &ControlFrame::NewConn { peer_addr: peer.to_string() }).await?;
+    write_frame(
+        &mut apex,
+        &ControlFrame::NewConn {
+            peer_addr: peer.to_string(),
+        },
+    )
+    .await?;
     if !already_read.is_empty() {
         let n = already_read.len() as u64;
         apex.write_all(&already_read).await?;
@@ -1362,7 +1475,9 @@ mod tests {
     fn policy_with(tokens: &[&str]) -> AuthPolicy {
         use std::collections::HashSet;
         AuthPolicy {
-            allowed: Some(Arc::new(std::sync::RwLock::new(tokens.iter().map(|s| s.to_string()).collect::<HashSet<_>>()))),
+            allowed: Some(Arc::new(std::sync::RwLock::new(
+                tokens.iter().map(|s| s.to_string()).collect::<HashSet<_>>(),
+            ))),
         }
     }
 
@@ -1390,7 +1505,10 @@ mod tests {
         let p = policy_with(&["mysecret"]);
         assert!(matches!(p.check(Some("wrong")), Err(AuthError::Invalid)));
         assert!(matches!(p.check(Some("mysecre")), Err(AuthError::Invalid))); // one char short
-        assert!(matches!(p.check(Some("mysecrett")), Err(AuthError::Invalid))); // one char long
+        assert!(matches!(
+            p.check(Some("mysecrett")),
+            Err(AuthError::Invalid)
+        )); // one char long
         assert!(matches!(p.check(Some("")), Err(AuthError::Invalid)));
     }
 
@@ -1414,13 +1532,13 @@ mod tests {
 
     #[test]
     fn validate_subdomain_invalid() {
-        assert!(validate_subdomain("").is_err());               // empty
-        assert!(validate_subdomain("-abc").is_err());           // leading hyphen
-        assert!(validate_subdomain("abc-").is_err());           // trailing hyphen
-        assert!(validate_subdomain("abc.def").is_err());        // dot not allowed
-        assert!(validate_subdomain("abc def").is_err());        // space not allowed
-        assert!(validate_subdomain("abc_def").is_err());        // underscore not allowed
-        assert!(validate_subdomain(&"a".repeat(64)).is_err());  // too long
+        assert!(validate_subdomain("").is_err()); // empty
+        assert!(validate_subdomain("-abc").is_err()); // leading hyphen
+        assert!(validate_subdomain("abc-").is_err()); // trailing hyphen
+        assert!(validate_subdomain("abc.def").is_err()); // dot not allowed
+        assert!(validate_subdomain("abc def").is_err()); // space not allowed
+        assert!(validate_subdomain("abc_def").is_err()); // underscore not allowed
+        assert!(validate_subdomain(&"a".repeat(64)).is_err()); // too long
     }
 
     #[tokio::test]
@@ -1446,7 +1564,7 @@ mod tests {
         let rl = RateLimiter::new(1, Duration::from_secs(60));
         assert!(rl.check_and_record("1.1.1.1").await);
         assert!(!rl.check_and_record("1.1.1.1").await); // second from same IP denied
-        assert!(rl.check_and_record("2.2.2.2").await);  // different IP still allowed
+        assert!(rl.check_and_record("2.2.2.2").await); // different IP still allowed
     }
 
     #[test]
@@ -1486,7 +1604,7 @@ mod tests {
     fn subdomain_prefix_enforced_correctly() {
         let p = SubdomainPrefix::new(Some("dev-".to_string()));
         assert!(p.check("dev-myapp").is_ok());
-        assert!(p.check("dev-").is_ok());   // prefix alone is fine syntactically
+        assert!(p.check("dev-").is_ok()); // prefix alone is fine syntactically
         assert!(p.check("DEV-myapp").is_ok()); // case-insensitive
         assert!(p.check("prod-myapp").is_err());
         assert!(p.check("myapp").is_err());

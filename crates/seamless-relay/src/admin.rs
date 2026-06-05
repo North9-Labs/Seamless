@@ -1,17 +1,16 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use subtle::ConstantTimeEq;
 
 use axum::{
-    Router,
     extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, Request, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{delete, get, post, put},
-    Json,
+    Json, Router,
 };
 use serde::Deserialize;
 use tower_http::cors::CorsLayer;
@@ -52,7 +51,10 @@ pub async fn start_admin(
         // Single tunnel details by ID
         .route("/api/tunnels/{id}", get(get_seamless_tunnel))
         // DDoS protection config per tunnel
-        .route("/api/tunnels/{id}/ddos", get(get_ddos_config).put(set_ddos_config))
+        .route(
+            "/api/tunnels/{id}/ddos",
+            get(get_ddos_config).put(set_ddos_config),
+        )
         // Per-tunnel request log (last N requests)
         .route("/api/tunnels/{id}/requests", get(get_tunnel_requests))
         // Stats history ring buffer
@@ -67,11 +69,23 @@ pub async fn start_admin(
         .route("/admin/audit", get(admin_audit_query))
         // Custom domain registry (Feature 2)
         .route("/api/custom-domains", get(list_custom_domains))
-        .route("/api/tunnels/{id}/custom-domain", post(set_custom_domain).delete(remove_custom_domain))
+        .route(
+            "/api/tunnels/{id}/custom-domain",
+            post(set_custom_domain).delete(remove_custom_domain),
+        )
         // Backend management (Feature 3)
-        .route("/api/tunnels/{id}/backends", get(list_backends).post(add_backend))
-        .route("/api/tunnels/{id}/backends/{backend_id}", delete(remove_backend))
-        .route("/api/tunnels/{id}/backends/{backend_id}/health", post(force_health_check))
+        .route(
+            "/api/tunnels/{id}/backends",
+            get(list_backends).post(add_backend),
+        )
+        .route(
+            "/api/tunnels/{id}/backends/{backend_id}",
+            delete(remove_backend),
+        )
+        .route(
+            "/api/tunnels/{id}/backends/{backend_id}/health",
+            post(force_health_check),
+        )
         // Logs + route health (logs protected by admin token)
         .route("/api/logs", get(get_logs))
         .route("/api/routes/health", get(health_routes))
@@ -80,25 +94,38 @@ pub async fn start_admin(
         // Settings (CF credentials)
         .route("/api/settings", get(get_settings).put(save_settings))
         // CF Tunnels
-        .route("/api/cf/tunnels", get(cf_list_tunnels).post(cf_create_tunnel))
+        .route(
+            "/api/cf/tunnels",
+            get(cf_list_tunnels).post(cf_create_tunnel),
+        )
         .route("/api/cf/tunnels/{id}", delete(cf_delete_tunnel))
         .route("/api/cf/tunnels/{id}/token", get(cf_tunnel_token))
         // CF Zones
         .route("/api/cf/zones", get(cf_list_zones))
         // CF DNS
-        .route("/api/cf/dns/{zone_id}", get(cf_list_dns).post(cf_create_dns))
+        .route(
+            "/api/cf/dns/{zone_id}",
+            get(cf_list_dns).post(cf_create_dns),
+        )
         .route(
             "/api/cf/dns/{zone_id}/{record_id}",
             put(cf_update_dns).delete(cf_delete_dns),
         )
-        .layer(middleware::from_fn_with_state(shared.clone(), require_admin_ip))
+        .layer(middleware::from_fn_with_state(
+            shared.clone(),
+            require_admin_ip,
+        ))
         .layer(CorsLayer::permissive())
         .with_state(shared);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     if let Some(tls_cfg) = tls {
-        let scheme = if tls_cfg.mtls { "https (mTLS)" } else { "https (TLS)" };
+        let scheme = if tls_cfg.mtls {
+            "https (mTLS)"
+        } else {
+            "https (TLS)"
+        };
         info!("admin ui listening on {scheme} https://{addr}");
         if tls_cfg.mtls {
             info!("admin mTLS: client certificates required — only CA-signed clients admitted");
@@ -109,7 +136,11 @@ pub async fn start_admin(
         serve_tls(listener, acceptor, make_svc).await?;
     } else {
         info!("admin ui listening on http://{addr}");
-        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -127,12 +158,18 @@ async fn serve_tls(
     loop {
         let (stream, peer_addr) = match listener.accept().await {
             Ok(v) => v,
-            Err(e) => { tracing::warn!("admin TLS accept: {e}"); continue; }
+            Err(e) => {
+                tracing::warn!("admin TLS accept: {e}");
+                continue;
+            }
         };
         let acceptor = acceptor.clone();
         let svc = match make_svc.call(peer_addr).await {
             Ok(s) => s,
-            Err(e) => { tracing::warn!("admin make_svc: {e:?}"); continue; }
+            Err(e) => {
+                tracing::warn!("admin make_svc: {e:?}");
+                continue;
+            }
         };
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(stream).await {
@@ -199,7 +236,9 @@ fn bad_request(msg: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Val
 fn credentials_required() -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
-        Json(serde_json::json!({ "error": "credentials not configured — set CF API token and account ID in Settings" })),
+        Json(
+            serde_json::json!({ "error": "credentials not configured — set CF API token and account ID in Settings" }),
+        ),
     )
 }
 
@@ -216,7 +255,11 @@ async fn cf_client(s: &AppState) -> Option<CfClient> {
     if cf.api_token.is_empty() || cf.account_id.is_empty() {
         return None;
     }
-    Some(CfClient::new(&cf.api_token, &cf.account_id, s.http_client.clone()))
+    Some(CfClient::new(
+        &cf.api_token,
+        &cf.account_id,
+        s.http_client.clone(),
+    ))
 }
 
 // ── Proxy Routes ──────────────────────────────────────────────────────────────
@@ -332,7 +375,10 @@ async fn list_seamless_tunnels(
             } else if s.http_port == 80 {
                 format!("http://{}.{}", entry.subdomain, s.base_domain)
             } else {
-                format!("http://{}.{}:{}", entry.subdomain, s.base_domain, s.http_port)
+                format!(
+                    "http://{}.{}:{}",
+                    entry.subdomain, s.base_domain, s.http_port
+                )
             };
             serde_json::json!({
                 "subdomain": entry.subdomain,
@@ -411,7 +457,10 @@ async fn get_seamless_tunnel(
         } else if s.http_port == 80 {
             format!("http://{}.{}", entry.subdomain, s.base_domain)
         } else {
-            format!("http://{}.{}:{}", entry.subdomain, s.base_domain, s.http_port)
+            format!(
+                "http://{}.{}:{}",
+                entry.subdomain, s.base_domain, s.http_port
+            )
         };
         serde_json::json!({
             "id": entry.subdomain,
@@ -746,7 +795,11 @@ async fn health_check(State(s): State<Arc<AppState>>) -> Json<serde_json::Value>
     let tunnels = s.tunnels.lock().await.len();
     let uptime_secs = s.start_time.elapsed().as_secs();
     let ws_active = s.metrics.ws_connections_active.load(Ordering::Relaxed);
-    let tls_version = if s.https_port.is_some() { "TLS1.3" } else { "none" };
+    let tls_version = if s.https_port.is_some() {
+        "TLS1.3"
+    } else {
+        "none"
+    };
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
@@ -763,7 +816,11 @@ async fn ready_check(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let tunnels = s.tunnels.lock().await.len();
     let uptime_secs = s.start_time.elapsed().as_secs();
     let ws_active = s.metrics.ws_connections_active.load(Ordering::Relaxed);
-    let tls_version = if s.https_port.is_some() { "TLS1.3" } else { "none" };
+    let tls_version = if s.https_port.is_some() {
+        "TLS1.3"
+    } else {
+        "none"
+    };
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
@@ -783,16 +840,26 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let handshake_avg = s.metrics.handshake_avg_ms();
     let auth_failures = s.metrics.auth_failures_total.load(Ordering::Relaxed);
     let rate_limit_hits = s.metrics.rate_limit_hits_total.load(Ordering::Relaxed);
-    let tunnel_cap_rejections = s.metrics.tunnel_cap_rejections_total.load(Ordering::Relaxed);
+    let tunnel_cap_rejections = s
+        .metrics
+        .tunnel_cap_rejections_total
+        .load(Ordering::Relaxed);
     let subdomain_invalid = s.metrics.subdomain_invalid_total.load(Ordering::Relaxed);
-    let tunnel_per_ip_rejections = s.metrics.tunnel_per_ip_rejections_total.load(Ordering::Relaxed);
+    let tunnel_per_ip_rejections = s
+        .metrics
+        .tunnel_per_ip_rejections_total
+        .load(Ordering::Relaxed);
     let ws_connections_active = s.metrics.ws_connections_active.load(Ordering::Relaxed);
     let geoip_blocked_total = s.metrics.geoip_blocked_total.load(Ordering::Relaxed);
-    let tcp_passthrough_active = crate::tcp_passthrough::TCP_PASSTHROUGH_CONNECTIONS_ACTIVE.load(Ordering::Relaxed);
+    let tcp_passthrough_active =
+        crate::tcp_passthrough::TCP_PASSTHROUGH_CONNECTIONS_ACTIVE.load(Ordering::Relaxed);
 
     let uptime_secs = s.start_time.elapsed().as_secs();
     let version = env!("CARGO_PKG_VERSION");
-    let latency_histogram = s.metrics.request_duration.render_prometheus("seamless_request_duration_seconds");
+    let latency_histogram = s
+        .metrics
+        .request_duration
+        .render_prometheus("seamless_request_duration_seconds");
     let body = format!(
         "# HELP seamless_info Relay version info\n\
          # TYPE seamless_info gauge\n\
@@ -846,7 +913,10 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 
     (
         StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
         body,
     )
 }
@@ -854,8 +924,16 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 // ── Status ────────────────────────────────────────────────────────────────────
 
 async fn get_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let auth_file = s.auth_file.as_ref().as_ref().map(|p| p.display().to_string());
-    let config_file = s.config_file.as_ref().as_ref().map(|p| p.display().to_string());
+    let auth_file = s
+        .auth_file
+        .as_ref()
+        .as_ref()
+        .map(|p| p.display().to_string());
+    let config_file = s
+        .config_file
+        .as_ref()
+        .as_ref()
+        .map(|p| p.display().to_string());
     let uptime_secs = s.start_time.elapsed().as_secs();
     Json(serde_json::json!({
         "seam_addr": s.seam_addr,
@@ -876,10 +954,7 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
 
 // ── Logs ──────────────────────────────────────────────────────────────────────
 
-async fn get_logs(
-    State(s): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn get_logs(State(s): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
     if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
         return deny.into_response();
     }
@@ -1164,7 +1239,10 @@ async fn set_custom_domain(
     }
 
     // Register in the custom_domains map and also update the TunnelEntry.
-    s.custom_domains.write().await.insert(domain.clone(), tunnel_id.clone());
+    s.custom_domains
+        .write()
+        .await
+        .insert(domain.clone(), tunnel_id.clone());
 
     // Update the TunnelEntry.
     if let Some(entry) = s.tunnels.lock().await.get(&tunnel_id).cloned() {
@@ -1184,10 +1262,14 @@ async fn set_custom_domain(
         "tunnel_id" => tunnel_id.as_str()
     );
 
-    (StatusCode::CREATED, Json(serde_json::json!({
-        "custom_domain": domain,
-        "tunnel_id": tunnel_id,
-    }))).into_response()
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "custom_domain": domain,
+            "tunnel_id": tunnel_id,
+        })),
+    )
+        .into_response()
 }
 
 /// `DELETE /api/tunnels/{id}/custom-domain` — remove a custom domain registration.
@@ -1235,7 +1317,11 @@ async fn get_ddos_config(
     let ddos = &entry.ddos;
     // Count blocks from last hour using the audit ring.
     let one_hour_ago = unix_now() - 3600;
-    let recent_blocks = s.audit_log.ring.query(Some(one_hour_ago), 1024).await
+    let recent_blocks = s
+        .audit_log
+        .ring
+        .query(Some(one_hour_ago), 1024)
+        .await
         .into_iter()
         .filter(|e| {
             e.get("event").and_then(|v| v.as_str()) == Some("ddos.blocked")
@@ -1250,7 +1336,8 @@ async fn get_ddos_config(
         "challenge_mode": ddos.challenge_mode.load(Ordering::Relaxed),
         "blocked_count": ddos.blocked_count.load(Ordering::Relaxed),
         "blocked_last_hour": recent_blocks,
-    })).into_response()
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -1322,7 +1409,8 @@ async fn set_ddos_config(
         "burst_size": new_burst,
         "challenge_mode": new_challenge,
         "blocked_count": ddos.blocked_count.load(Ordering::Relaxed),
-    })).into_response()
+    }))
+    .into_response()
 }
 
 // ── Per-tunnel request log ─────────────────────────────────────────────────────
@@ -1357,7 +1445,8 @@ async fn get_tunnel_requests(
         "tunnel_id": id,
         "count": requests.len(),
         "requests": requests,
-    })).into_response()
+    }))
+    .into_response()
 }
 
 // ── Feature 3: Load Balancing — Backend Management ────────────────────────────
@@ -1384,14 +1473,16 @@ async fn list_backends(
     let backends = entry.backends.read().await;
     let list: Vec<serde_json::Value> = backends
         .iter()
-        .map(|b| serde_json::json!({
-            "id": b.id,
-            "addr": b.addr.to_string(),
-            "weight": b.weight,
-            "healthy": b.healthy.load(AOrd::Relaxed),
-            "requests": b.requests.load(AOrd::Relaxed),
-            "errors": b.errors.load(AOrd::Relaxed),
-        }))
+        .map(|b| {
+            serde_json::json!({
+                "id": b.id,
+                "addr": b.addr.to_string(),
+                "weight": b.weight,
+                "healthy": b.healthy.load(AOrd::Relaxed),
+                "requests": b.requests.load(AOrd::Relaxed),
+                "errors": b.errors.load(AOrd::Relaxed),
+            })
+        })
         .collect();
     Json(serde_json::json!({ "backends": list, "count": list.len() })).into_response()
 }
@@ -1403,7 +1494,9 @@ struct AddBackendReq {
     weight: u32,
 }
 
-fn default_weight() -> u32 { 1 }
+fn default_weight() -> u32 {
+    1
+}
 
 /// `POST /api/tunnels/{id}/backends` — add a backend.
 async fn add_backend(
@@ -1441,14 +1534,18 @@ async fn add_backend(
         "backend {addr} added to tunnel {tunnel_id}"
     );
 
-    (StatusCode::CREATED, Json(serde_json::json!({
-        "id": backend_id,
-        "addr": addr.to_string(),
-        "weight": req.weight.max(1),
-        "healthy": true,
-        "requests": 0_u64,
-        "errors": 0_u64,
-    }))).into_response()
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": backend_id,
+            "addr": addr.to_string(),
+            "weight": req.weight.max(1),
+            "healthy": true,
+            "requests": 0_u64,
+            "errors": 0_u64,
+        })),
+    )
+        .into_response()
 }
 
 /// `DELETE /api/tunnels/{id}/backends/{backend_id}` — remove a backend.
@@ -1510,7 +1607,8 @@ async fn force_health_check(
         "id": backend.id,
         "addr": backend.addr.to_string(),
         "healthy": healthy,
-    })).into_response()
+    }))
+    .into_response()
 }
 
 /// Perform a TCP connection check to a backend address.
@@ -1532,7 +1630,8 @@ fn spawn_backend_health_check(
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await; // discard immediate tick
-        let mut fail_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut fail_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         loop {
             interval.tick().await;
             let list = backends.read().await.clone();

@@ -91,7 +91,10 @@ impl AuditLog {
     /// Returns a no-op handle when `--audit-log` is not configured.
     /// The in-memory ring is still active (events are always kept in memory).
     pub fn disabled() -> Self {
-        Self { tx: None, ring: AuditRing::new() }
+        Self {
+            tx: None,
+            ring: AuditRing::new(),
+        }
     }
 
     /// Spawn the background writer task and return a handle.
@@ -186,10 +189,7 @@ impl WriterState {
         if self.file.is_none() {
             self.file = Some(open_log_file(&self.base_path).await?);
             self.open_date = Some(today);
-            tracing::info!(
-                "audit-log: opened {}",
-                self.base_path.display()
-            );
+            tracing::info!("audit-log: opened {}", self.base_path.display());
         }
 
         // Serialize and write.
@@ -216,13 +216,12 @@ impl WriterState {
         let rotated = PathBuf::from(format!(
             "{}.{:04}-{:02}-{:02}",
             self.base_path.display(),
-            y, m, d
+            y,
+            m,
+            d
         ));
         match tokio::fs::rename(&self.base_path, &rotated).await {
-            Ok(()) => tracing::info!(
-                "audit-log: rotated to {}",
-                rotated.display()
-            ),
+            Ok(()) => tracing::info!("audit-log: rotated to {}", rotated.display()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Nothing to rotate — the file was never written (e.g. day with no events).
             }
@@ -327,9 +326,12 @@ mod tests {
     #[tokio::test]
     async fn audit_ring_query_all() {
         let ring = AuditRing::new();
-        ring.push(serde_json::json!({"event": "a", "ts": 100})).await;
-        ring.push(serde_json::json!({"event": "b", "ts": 200})).await;
-        ring.push(serde_json::json!({"event": "c", "ts": 300})).await;
+        ring.push(serde_json::json!({"event": "a", "ts": 100}))
+            .await;
+        ring.push(serde_json::json!({"event": "b", "ts": 200}))
+            .await;
+        ring.push(serde_json::json!({"event": "c", "ts": 300}))
+            .await;
 
         let all = ring.query(None, 100).await;
         assert_eq!(all.len(), 3);
@@ -340,8 +342,10 @@ mod tests {
     #[tokio::test]
     async fn audit_ring_query_since() {
         let ring = AuditRing::new();
-        ring.push(serde_json::json!({"event": "old", "ts": 50})).await;
-        ring.push(serde_json::json!({"event": "new", "ts": 200})).await;
+        ring.push(serde_json::json!({"event": "old", "ts": 50}))
+            .await;
+        ring.push(serde_json::json!({"event": "new", "ts": 200}))
+            .await;
 
         let recent = ring.query(Some(100), 100).await;
         assert_eq!(recent.len(), 1);
@@ -372,8 +376,14 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         let content = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(content.contains("test.event"), "expected test.event in {content}");
-        assert!(content.contains("test.event2"), "expected test.event2 in {content}");
+        assert!(
+            content.contains("test.event"),
+            "expected test.event in {content}"
+        );
+        assert!(
+            content.contains("test.event2"),
+            "expected test.event2 in {content}"
+        );
         // Each event on its own line
         assert_eq!(content.lines().count(), 2);
 

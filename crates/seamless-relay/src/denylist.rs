@@ -119,7 +119,11 @@ fn parse_cidr(s: &str) -> Option<(u32, u32)> {
     let prefix_len: u32 = prefix_str.parse().ok().filter(|&n| n <= 32)?;
     let ip: std::net::Ipv4Addr = ip_str.trim().parse().ok()?;
     let ip_u32 = u32::from(ip);
-    let mask: u32 = if prefix_len == 0 { 0 } else { !0u32 << (32 - prefix_len) };
+    let mask: u32 = if prefix_len == 0 {
+        0
+    } else {
+        !0u32 << (32 - prefix_len)
+    };
     Some((ip_u32 & mask, mask))
 }
 

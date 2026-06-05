@@ -43,14 +43,18 @@ impl TcpPassthroughConfig {
                 s
             );
         }
-        let listen_port: u16 = parts[0]
-            .parse()
-            .map_err(|_| anyhow::anyhow!("invalid listen port '{}' in --tcp-passthrough", parts[0]))?;
+        let listen_port: u16 = parts[0].parse().map_err(|_| {
+            anyhow::anyhow!("invalid listen port '{}' in --tcp-passthrough", parts[0])
+        })?;
         let backend_host = parts[1].to_string();
-        let backend_port: u16 = parts[2]
-            .parse()
-            .map_err(|_| anyhow::anyhow!("invalid backend port '{}' in --tcp-passthrough", parts[2]))?;
-        Ok(Self { listen_port, backend_host, backend_port })
+        let backend_port: u16 = parts[2].parse().map_err(|_| {
+            anyhow::anyhow!("invalid backend port '{}' in --tcp-passthrough", parts[2])
+        })?;
+        Ok(Self {
+            listen_port,
+            backend_host,
+            backend_port,
+        })
     }
 }
 
@@ -80,7 +84,10 @@ pub async fn run_tcp_passthrough(
         let (client_tcp, peer_addr) = match listener.accept().await {
             Ok(v) => v,
             Err(e) => {
-                warn!("tcp-passthrough: accept error on port {}: {e}", cfg.listen_port);
+                warn!(
+                    "tcp-passthrough: accept error on port {}: {e}",
+                    cfg.listen_port
+                );
                 continue;
             }
         };
@@ -214,8 +221,5 @@ async fn forward(client: TcpStream, backend_addr: &str) -> (u64, u64) {
     let backend_to_client = tokio::io::copy(&mut backend_r, &mut client_w);
 
     let (bytes_in, bytes_out) = tokio::join!(client_to_backend, backend_to_client);
-    (
-        bytes_in.unwrap_or(0),
-        bytes_out.unwrap_or(0),
-    )
+    (bytes_in.unwrap_or(0), bytes_out.unwrap_or(0))
 }

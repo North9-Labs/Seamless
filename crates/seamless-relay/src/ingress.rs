@@ -46,7 +46,10 @@ pub async fn run_https_ingress(
         // Clone the current acceptor under the read lock — O(1) and non-blocking.
         // SIGUSR1 can swap the inner acceptor at any time; existing connections
         // are unaffected because they hold their own clone.
-        let acceptor = acceptor.read().expect("hot acceptor RwLock poisoned").clone();
+        let acceptor = acceptor
+            .read()
+            .expect("hot acceptor RwLock poisoned")
+            .clone();
         let state = state.clone();
         tokio::spawn(async move {
             match acceptor.accept(tcp).await {
@@ -93,10 +96,12 @@ pub async fn run_https_ingress(
 /// for TLS 1.3 connections).
 fn tls_connection_fingerprint(stream: &tokio_rustls::server::TlsStream<TcpStream>) -> String {
     let (_, server_conn) = stream.get_ref();
-    let protocol = server_conn.protocol_version()
+    let protocol = server_conn
+        .protocol_version()
         .map(|v| format!("{v:?}"))
         .unwrap_or_else(|| "Unknown".to_string());
-    let cipher = server_conn.negotiated_cipher_suite()
+    let cipher = server_conn
+        .negotiated_cipher_suite()
         .map(|cs| format!("{:?}", cs.suite()))
         .unwrap_or_else(|| "Unknown".to_string());
 
@@ -116,14 +121,22 @@ fn fnv1a_32(data: &[u8]) -> u32 {
     hash
 }
 
-async fn route_http<S>(mut stream: S, peer: SocketAddr, state: AppState, is_https: bool) -> Result<()>
+async fn route_http<S>(
+    mut stream: S,
+    peer: SocketAddr,
+    state: AppState,
+    is_https: bool,
+) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     // ── Geo-IP block check (applied before any I/O) ───────────────────────────
     let peer_ip = peer.ip();
     if state.geoip.is_blocked(peer_ip) {
-        let country = state.geoip.country_code(peer_ip).unwrap_or_else(|| "unknown".to_string());
+        let country = state
+            .geoip
+            .country_code(peer_ip)
+            .unwrap_or_else(|| "unknown".to_string());
         warn!(
             event = "http.geo_blocked",
             peer = %peer,
@@ -171,7 +184,7 @@ where
             return Ok(());
         }
         Ok(Ok(false)) => return Ok(()), // EOF
-        Ok(Ok(true)) => {} // full headers received
+        Ok(Ok(true)) => {}              // full headers received
     }
 
     let host = match parse_host_header(&head) {
@@ -193,7 +206,10 @@ where
         let tunnels = state.tunnels.lock().await.len();
         let uptime_secs = state.start_time.elapsed().as_secs();
         let version = env!("CARGO_PKG_VERSION");
-        let ws_active = state.metrics.ws_connections_active.load(std::sync::atomic::Ordering::Relaxed);
+        let ws_active = state
+            .metrics
+            .ws_connections_active
+            .load(std::sync::atomic::Ordering::Relaxed);
         let tls_version = if is_https { "TLS1.3" } else { "none" };
         let body = format!(
             r#"{{"status":"ok","version":"{version}","uptime_seconds":{uptime_secs},"tunnels_active":{tunnels},"ws_connections_active":{ws_active},"tls_version":"{tls_version}","fips_mode":false}}"#
@@ -258,23 +274,24 @@ where
                 return Ok(());
             }
         };
-        let upstream_result = tokio::time::timeout(
-            Duration::from_secs(10),
-            TcpStream::connect(&addr),
-        )
-        .await;
+        let upstream_result =
+            tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(&addr)).await;
         let mut upstream = match upstream_result {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
                 warn!("upstream {addr} unreachable: {e}");
-                logs::push(&state.log_buffer, LogEntry {
-                    ts: unix_now(),
-                    method,
-                    path,
-                    host,
-                    routed_to: format!("proxy:{url}"),
-                    status: 502,
-                }).await;
+                logs::push(
+                    &state.log_buffer,
+                    LogEntry {
+                        ts: unix_now(),
+                        method,
+                        path,
+                        host,
+                        routed_to: format!("proxy:{url}"),
+                        status: 502,
+                    },
+                )
+                .await;
                 let body = format!("seamless: upstream '{addr}' unreachable\n");
                 let resp = error_response("502 Bad Gateway", &body, is_https);
                 stream.write_all(resp.as_bytes()).await.ok();
@@ -282,14 +299,18 @@ where
             }
             Err(_timeout) => {
                 warn!("upstream {addr} connect timed out");
-                logs::push(&state.log_buffer, LogEntry {
-                    ts: unix_now(),
-                    method,
-                    path,
-                    host,
-                    routed_to: format!("proxy:{url}"),
-                    status: 504,
-                }).await;
+                logs::push(
+                    &state.log_buffer,
+                    LogEntry {
+                        ts: unix_now(),
+                        method,
+                        path,
+                        host,
+                        routed_to: format!("proxy:{url}"),
+                        status: 504,
+                    },
+                )
+                .await;
                 let body = format!("seamless: upstream '{addr}' timed out\n");
                 let resp = error_response("504 Gateway Timeout", &body, is_https);
                 stream.write_all(resp.as_bytes()).await.ok();
@@ -299,18 +320,24 @@ where
         let is_ws = is_websocket_upgrade(&head);
         let fwd_head = inject_forwarding_headers(&head, &peer.ip().to_string(), is_https);
         upstream.write_all(&fwd_head).await?;
-        logs::push(&state.log_buffer, LogEntry {
-            ts: unix_now(),
-            method,
-            path,
-            host,
-            routed_to: format!("proxy:{url}"),
-            status: 0, // upstream status comes back in the response stream; recorded as 0 = connected
-        }).await;
+        logs::push(
+            &state.log_buffer,
+            LogEntry {
+                ts: unix_now(),
+                method,
+                path,
+                host,
+                routed_to: format!("proxy:{url}"),
+                status: 0, // upstream status comes back in the response stream; recorded as 0 = connected
+            },
+        )
+        .await;
         if is_ws {
             state.metrics.inc_ws_connections();
         }
-        tokio::io::copy_bidirectional(&mut stream, &mut upstream).await.ok();
+        tokio::io::copy_bidirectional(&mut stream, &mut upstream)
+            .await
+            .ok();
         if is_ws {
             state.metrics.dec_ws_connections();
         }
@@ -377,19 +404,29 @@ where
 
             let is_ws = is_websocket_upgrade(&head);
             state.metrics.inc_connections();
-            logs::push(&state.log_buffer, LogEntry {
-                ts: unix_now(),
-                method: method.clone(),
-                path: path.clone(),
-                host: host.clone(),
-                routed_to: format!("tunnel:{sub}"),
-                status: 0,
-            }).await;
+            logs::push(
+                &state.log_buffer,
+                LogEntry {
+                    ts: unix_now(),
+                    method: method.clone(),
+                    path: path.clone(),
+                    host: host.clone(),
+                    routed_to: format!("tunnel:{sub}"),
+                    status: 0,
+                },
+            )
+            .await;
             // Record request start time for latency histogram.
             let req_start = std::time::Instant::now();
             let client_ip_str = peer.ip().to_string();
             let mut apex = entry.mux.open_stream().await;
-            write_frame(&mut apex, &ControlFrame::NewConn { peer_addr: peer.to_string() }).await?;
+            write_frame(
+                &mut apex,
+                &ControlFrame::NewConn {
+                    peer_addr: peer.to_string(),
+                },
+            )
+            .await?;
             if !head.is_empty() {
                 let fwd_head = inject_forwarding_headers(&head, &peer.ip().to_string(), is_https);
                 let n = fwd_head.len() as u64;
@@ -440,14 +477,18 @@ where
     }
 
     // 3. No route found — return 502.
-    logs::push(&state.log_buffer, LogEntry {
-        ts: unix_now(),
-        method,
-        path,
-        host: host.clone(),
-        routed_to: "none".to_string(),
-        status: 502,
-    }).await;
+    logs::push(
+        &state.log_buffer,
+        LogEntry {
+            ts: unix_now(),
+            method,
+            path,
+            host: host.clone(),
+            routed_to: "none".to_string(),
+            status: 502,
+        },
+    )
+    .await;
     let body = format!("seamless: no route for '{host}'\n");
     let resp = error_response("502 Bad Gateway", &body, is_https);
     if let Err(e) = stream.write_all(resp.as_bytes()).await {
@@ -541,7 +582,7 @@ fn inject_forwarding_headers(head: &[u8], peer_ip: &str, is_https: bool) -> Vec<
     // Find the end of the first line (request line).
     let split_at = head.windows(2).position(|w| w == b"\r\n");
     let split_at = match split_at {
-        Some(i) => i + 2, // include the \r\n
+        Some(i) => i + 2,             // include the \r\n
         None => return head.to_vec(), // malformed — pass through unchanged
     };
     let proto = if is_https { "https" } else { "http" };
@@ -557,7 +598,9 @@ fn inject_forwarding_headers(head: &[u8], peer_ip: &str, is_https: bool) -> Vec<
 
 /// Returns true when the raw HTTP header block contains an `Upgrade: websocket` header.
 fn is_websocket_upgrade(head: &[u8]) -> bool {
-    let Ok(s) = std::str::from_utf8(head) else { return false };
+    let Ok(s) = std::str::from_utf8(head) else {
+        return false;
+    };
     let mut has_upgrade_websocket = false;
     let mut has_connection_upgrade = false;
     for line in s.split("\r\n") {
@@ -567,7 +610,9 @@ fn is_websocket_upgrade(head: &[u8]) -> bool {
             if name.eq_ignore_ascii_case("upgrade") && value.eq_ignore_ascii_case("websocket") {
                 has_upgrade_websocket = true;
             }
-            if name.eq_ignore_ascii_case("connection") && value.to_ascii_lowercase().contains("upgrade") {
+            if name.eq_ignore_ascii_case("connection")
+                && value.to_ascii_lowercase().contains("upgrade")
+            {
                 has_connection_upgrade = true;
             }
         }
@@ -605,7 +650,11 @@ mod tests {
             b"GET / HTTP/1.1\r\nHoSt: a.b.c\r\n\r\n",
         ];
         for raw in &cases {
-            assert_eq!(parse_host_header(raw), Some("a.b.c".into()), "failed on {raw:?}");
+            assert_eq!(
+                parse_host_header(raw),
+                Some("a.b.c".into()),
+                "failed on {raw:?}"
+            );
         }
     }
 
@@ -617,22 +666,40 @@ mod tests {
 
     #[test]
     fn extract_subdomain_basic() {
-        assert_eq!(extract_subdomain("foo.example.com", "example.com"), Some("foo".into()));
-        assert_eq!(extract_subdomain("foo.example.com:8080", "example.com"), Some("foo".into()));
+        assert_eq!(
+            extract_subdomain("foo.example.com", "example.com"),
+            Some("foo".into())
+        );
+        assert_eq!(
+            extract_subdomain("foo.example.com:8080", "example.com"),
+            Some("foo".into())
+        );
         assert_eq!(extract_subdomain("notexample.com", "example.com"), None);
         assert_eq!(extract_subdomain("example.com", "example.com"), None);
     }
 
     #[test]
     fn parse_upstream_addr_http() {
-        assert_eq!(parse_upstream_addr("http://localhost:3000").unwrap(), "localhost:3000");
-        assert_eq!(parse_upstream_addr("http://localhost").unwrap(), "localhost:80");
+        assert_eq!(
+            parse_upstream_addr("http://localhost:3000").unwrap(),
+            "localhost:3000"
+        );
+        assert_eq!(
+            parse_upstream_addr("http://localhost").unwrap(),
+            "localhost:80"
+        );
     }
 
     #[test]
     fn parse_upstream_addr_https() {
-        assert_eq!(parse_upstream_addr("https://api.example.com").unwrap(), "api.example.com:443");
-        assert_eq!(parse_upstream_addr("https://api.example.com:8443").unwrap(), "api.example.com:8443");
+        assert_eq!(
+            parse_upstream_addr("https://api.example.com").unwrap(),
+            "api.example.com:443"
+        );
+        assert_eq!(
+            parse_upstream_addr("https://api.example.com:8443").unwrap(),
+            "api.example.com:8443"
+        );
     }
 
     #[test]

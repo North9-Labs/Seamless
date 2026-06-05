@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
-use seamless_common::{read_frame, write_frame, ControlFrame, TunnelKind, PROTOCOL_VERSION};
 use seam_protocol::api::Client;
-use seam_protocol::handshake::{IdentityKeypair, KemPublicKey, pk_from_bytes};
+use seam_protocol::handshake::{pk_from_bytes, IdentityKeypair, KemPublicKey};
 use seam_protocol::tunnel::{SeamMux, SeamStream};
+use seamless_common::{read_frame, write_frame, ControlFrame, TunnelKind, PROTOCOL_VERSION};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tracing::{info, warn};
@@ -144,27 +144,23 @@ async fn main() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                format!("{},seamless_client=debug", args.log_level).into()
-            }),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| format!("{},seamless_client=debug", args.log_level).into()),
         )
         .init();
 
     // Load config file: --config path overrides default location.
     let saved = config::load_from(args.config.as_ref());
 
-    let relay_str = args
-        .relay
-        .or(saved.relay)
-        .ok_or_else(|| anyhow!("--relay required (or run `seamless config init --relay <addr>` to save it)"))?;
-    let x25519_str = args
-        .x25519
-        .or(saved.x25519)
-        .ok_or_else(|| anyhow!("--x25519 required (or run `seamless config init --x25519 <hex>` to save it)"))?;
-    let kem_str = args
-        .kem
-        .or(saved.kem)
-        .ok_or_else(|| anyhow!("--kem required (or run `seamless config init --kem <hex>` to save it)"))?;
+    let relay_str = args.relay.or(saved.relay).ok_or_else(|| {
+        anyhow!("--relay required (or run `seamless config init --relay <addr>` to save it)")
+    })?;
+    let x25519_str = args.x25519.or(saved.x25519).ok_or_else(|| {
+        anyhow!("--x25519 required (or run `seamless config init --x25519 <hex>` to save it)")
+    })?;
+    let kem_str = args.kem.or(saved.kem).ok_or_else(|| {
+        anyhow!("--kem required (or run `seamless config init --kem <hex>` to save it)")
+    })?;
     let token = args.token.or(saved.token);
 
     let relay: SocketAddr = relay_str
@@ -173,9 +169,13 @@ async fn main() -> Result<()> {
     let x25519_pk = parse_x25519(&x25519_str)?;
     let kem_pk = parse_kem(&kem_str)?;
 
-    let local_target = args.cmd.local_target()
+    let local_target = args
+        .cmd
+        .local_target()
         .ok_or_else(|| anyhow!("expected http or tcp subcommand"))?;
-    let kind = args.cmd.to_kind(saved.subdomain)
+    let kind = args
+        .cmd
+        .to_kind(saved.subdomain)
         .ok_or_else(|| anyhow!("expected http or tcp subcommand"))?;
 
     // Generate a single ephemeral identity for this process run.
@@ -268,36 +268,87 @@ async fn main() -> Result<()> {
 
 fn handle_config(action: &ConfigAction) -> Result<()> {
     match action {
-        ConfigAction::Init { relay, x25519, kem, token, subdomain } => {
+        ConfigAction::Init {
+            relay,
+            x25519,
+            kem,
+            token,
+            subdomain,
+        } => {
             let mut cfg = config::load();
-            if relay.is_some()     { cfg.relay     = relay.clone(); }
-            if x25519.is_some()    { cfg.x25519    = x25519.clone(); }
-            if kem.is_some()       { cfg.kem        = kem.clone(); }
-            if token.is_some()     { cfg.token      = token.clone(); }
-            if subdomain.is_some() { cfg.subdomain  = subdomain.clone(); }
+            if relay.is_some() {
+                cfg.relay = relay.clone();
+            }
+            if x25519.is_some() {
+                cfg.x25519 = x25519.clone();
+            }
+            if kem.is_some() {
+                cfg.kem = kem.clone();
+            }
+            if token.is_some() {
+                cfg.token = token.clone();
+            }
+            if subdomain.is_some() {
+                cfg.subdomain = subdomain.clone();
+            }
             config::save(&cfg)?;
             println!("config saved → {}", config::path_display());
             println!();
-            if let Some(r) = &cfg.relay     { println!("  relay     = {r}"); }
-            if let Some(k) = &cfg.x25519    { println!("  x25519    = {k}"); }
-            if cfg.kem.is_some()             { println!("  kem       = <{} bytes>", cfg.kem.as_deref().unwrap().len() / 2); }
-            if cfg.token.is_some()           { println!("  token     = <set>"); }
-            if let Some(s) = &cfg.subdomain  { println!("  subdomain = {s}"); }
+            if let Some(r) = &cfg.relay {
+                println!("  relay     = {r}");
+            }
+            if let Some(k) = &cfg.x25519 {
+                println!("  x25519    = {k}");
+            }
+            if cfg.kem.is_some() {
+                println!(
+                    "  kem       = <{} bytes>",
+                    cfg.kem.as_deref().unwrap().len() / 2
+                );
+            }
+            if cfg.token.is_some() {
+                println!("  token     = <set>");
+            }
+            if let Some(s) = &cfg.subdomain {
+                println!("  subdomain = {s}");
+            }
         }
         ConfigAction::Show => {
             let cfg = config::load();
             println!("config: {}", config::path_display());
             println!();
-            println!("  relay     = {}", cfg.relay.as_deref().unwrap_or("<not set>"));
-            println!("  x25519    = {}", cfg.x25519.as_deref().unwrap_or("<not set>"));
-            println!("  kem       = {}", if cfg.kem.is_some() {
-                format!("<{} bytes>", cfg.kem.as_deref().unwrap().len() / 2)
-            } else {
-                "<not set>".into()
-            });
-            println!("  token     = {}", if cfg.token.is_some() { "<set>" } else { "<not set>" });
-            println!("  subdomain = {}", cfg.subdomain.as_deref().unwrap_or("<not set>"));
-            println!("  local     = {}", cfg.local.as_deref().unwrap_or("<not set>"));
+            println!(
+                "  relay     = {}",
+                cfg.relay.as_deref().unwrap_or("<not set>")
+            );
+            println!(
+                "  x25519    = {}",
+                cfg.x25519.as_deref().unwrap_or("<not set>")
+            );
+            println!(
+                "  kem       = {}",
+                if cfg.kem.is_some() {
+                    format!("<{} bytes>", cfg.kem.as_deref().unwrap().len() / 2)
+                } else {
+                    "<not set>".into()
+                }
+            );
+            println!(
+                "  token     = {}",
+                if cfg.token.is_some() {
+                    "<set>"
+                } else {
+                    "<not set>"
+                }
+            );
+            println!(
+                "  subdomain = {}",
+                cfg.subdomain.as_deref().unwrap_or("<not set>")
+            );
+            println!(
+                "  local     = {}",
+                cfg.local.as_deref().unwrap_or("<not set>")
+            );
             println!("  tls_verify = {}", cfg.tls_verify);
         }
         ConfigAction::Clear => {
@@ -438,5 +489,6 @@ fn parse_x25519(s: &str) -> Result<[u8; 32]> {
 
 fn parse_kem(s: &str) -> Result<KemPublicKey> {
     let bytes = hex::decode(s.trim()).context("kem key not hex")?;
-    pk_from_bytes(&bytes).ok_or_else(|| anyhow!("invalid ML-KEM-768 public key ({} bytes)", bytes.len()))
+    pk_from_bytes(&bytes)
+        .ok_or_else(|| anyhow!("invalid ML-KEM-768 public key ({} bytes)", bytes.len()))
 }

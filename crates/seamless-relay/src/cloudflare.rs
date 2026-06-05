@@ -87,7 +87,8 @@ impl<T> CfResp<T> {
                 .unwrap_or_else(|| "unknown CF API error".into());
             return Err(anyhow!(msg));
         }
-        self.result.ok_or_else(|| anyhow!("CF API returned null result"))
+        self.result
+            .ok_or_else(|| anyhow!("CF API returned null result"))
     }
 }
 
@@ -238,11 +239,8 @@ impl CfClient {
         record_id: &str,
         req: &CreateDnsRecord,
     ) -> Result<CfDnsRecord> {
-        self.put(
-            &format!("/zones/{zone_id}/dns_records/{record_id}"),
-            req,
-        )
-        .await
+        self.put(&format!("/zones/{zone_id}/dns_records/{record_id}"), req)
+            .await
     }
 
     pub async fn delete_dns_record(&self, zone_id: &str, record_id: &str) -> Result<()> {

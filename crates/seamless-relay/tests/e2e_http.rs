@@ -8,10 +8,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use seamless_common::{read_frame, write_frame, ControlFrame, TunnelKind, PROTOCOL_VERSION};
 use seam_protocol::api::{Client, Server};
-use seam_protocol::handshake::{IdentityKeypair, pk_from_bytes, pk_to_bytes};
+use seam_protocol::handshake::{pk_from_bytes, pk_to_bytes, IdentityKeypair};
 use seam_protocol::tunnel::{SeamMux, SeamStream};
+use seamless_common::{read_frame, write_frame, ControlFrame, TunnelKind, PROTOCOL_VERSION};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -38,12 +38,16 @@ async fn run_test() {
     let tunnels: TunnelMap = Arc::new(Mutex::new(HashMap::new()));
 
     // ── HTTP ingress ─────────────────────────────────────────────────────
-    let ingress = TcpListener::bind("127.0.0.1:0").await.expect("ingress bind");
+    let ingress = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("ingress bind");
     let ingress_addr = ingress.local_addr().expect("ingress local_addr");
     let ingress_tunnels = tunnels.clone();
     tokio::spawn(async move {
         loop {
-            let Ok((tcp, peer)) = ingress.accept().await else { break };
+            let Ok((tcp, peer)) = ingress.accept().await else {
+                break;
+            };
             let tmap = ingress_tunnels.clone();
             tokio::spawn(async move {
                 let _ = relay_route_http(tcp, peer, tmap).await;
@@ -68,7 +72,9 @@ async fn run_test() {
     let origin_addr = origin.local_addr().expect("origin local_addr");
     tokio::spawn(async move {
         loop {
-            let Ok((mut tcp, _)) = origin.accept().await else { break };
+            let Ok((mut tcp, _)) = origin.accept().await else {
+                break;
+            };
             tokio::spawn(async move {
                 let mut junk = [0u8; 1024];
                 let _ = tcp.read(&mut junk).await;
@@ -152,12 +158,9 @@ async fn send_http_request(addr: SocketAddr, host: &str) -> String {
     );
     tcp.write_all(req.as_bytes()).await.expect("write req");
     let mut buf = Vec::with_capacity(1024);
-    let _ = tokio::time::timeout(
-        Duration::from_secs(5),
-        tcp.read_to_end(&mut buf),
-    )
-    .await
-    .expect("read timeout");
+    let _ = tokio::time::timeout(Duration::from_secs(5), tcp.read_to_end(&mut buf))
+        .await
+        .expect("read timeout");
     String::from_utf8_lossy(&buf).into_owned()
 }
 

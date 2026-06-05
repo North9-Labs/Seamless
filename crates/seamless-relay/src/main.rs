@@ -5,10 +5,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use seam_protocol::api::Server;
-use seam_protocol::handshake::{IdentityKeypair, pk_to_bytes};
-use seam_protocol::tunnel::SeamMux;
 use clap::Parser;
+use seam_protocol::api::Server;
+use seam_protocol::handshake::{pk_to_bytes, IdentityKeypair};
+use seam_protocol::tunnel::SeamMux;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -34,7 +34,10 @@ use logs::LogBuffer;
 use metrics::Metrics;
 use store::SharedStore;
 use tcp_passthrough::TcpPassthroughConfig;
-use tunnel::{AuthPolicy, CustomDomainMap, RateLimiter, ReservedSubdomains, SubdomainBlocklist, SubdomainPrefix, TcpPortSet, TunnelMap};
+use tunnel::{
+    AuthPolicy, CustomDomainMap, RateLimiter, ReservedSubdomains, SubdomainBlocklist,
+    SubdomainPrefix, TcpPortSet, TunnelMap,
+};
 
 // ── Stats history ring buffer ─────────────────────────────────────────────────
 
@@ -429,7 +432,6 @@ struct Args {
     tunnel_keepalive: u64,
 
     // ── Feature 1: ACME / Let's Encrypt ──────────────────────────────────────
-
     /// Email address for Let's Encrypt account registration.
     #[arg(long, env = "SEAMLESS_ACME_EMAIL")]
     acme_email: Option<String>,
@@ -451,7 +453,6 @@ struct Args {
     acme_production: bool,
 
     // ── Feature 2: Custom Domain Support ─────────────────────────────────────
-
     /// Allow clients to register any custom domain (SNI/Host routing).
     /// Without this flag, only domains in --custom-domain-allowlist are accepted.
     #[arg(long, default_value_t = false, env = "SEAMLESS_ALLOW_CUSTOM_DOMAINS")]
@@ -462,16 +463,18 @@ struct Args {
     custom_domain_allowlist: Option<String>,
 
     // ── Feature 3: TCP Passthrough ────────────────────────────────────────────
-
     /// Forward raw TCP connections to a backend without HTTP parsing.
     /// Format: <listen_port>:<backend_host>:<backend_port>
     /// Can be repeated for multiple passthrough rules.
     /// Example: --tcp-passthrough 5432:db.internal:5432 --tcp-passthrough 6379:redis.internal:6379
-    #[arg(long = "tcp-passthrough", value_name = "PORT:HOST:PORT", env = "SEAMLESS_TCP_PASSTHROUGH")]
+    #[arg(
+        long = "tcp-passthrough",
+        value_name = "PORT:HOST:PORT",
+        env = "SEAMLESS_TCP_PASSTHROUGH"
+    )]
     tcp_passthrough: Vec<String>,
 
     // ── Feature 4: Geo-IP Country Blocking ───────────────────────────────────
-
     /// Path to a MaxMind GeoLite2-Country.mmdb file for geo-IP blocking.
     /// Required when --block-countries is set. Without this flag, geo-blocking
     /// is disabled and a warning is emitted.
@@ -497,135 +500,217 @@ fn apply_file_config(args: &mut Args, cfg: &FileConfig) {
     // Required fields with defaults — replace only when still at the hardcoded default.
     if args.seam_addr == "0.0.0.0:4443".parse().unwrap() {
         if let Some(ref v) = cfg.seam_addr {
-            if let Ok(a) = v.parse() { args.seam_addr = a; }
+            if let Ok(a) = v.parse() {
+                args.seam_addr = a;
+            }
         }
     }
     if args.http_addr == "0.0.0.0:8080".parse().unwrap() {
         if let Some(ref v) = cfg.http_addr {
-            if let Ok(a) = v.parse() { args.http_addr = a; }
+            if let Ok(a) = v.parse() {
+                args.http_addr = a;
+            }
         }
     }
     if args.admin_addr == "0.0.0.0:8088".parse().unwrap() {
         if let Some(ref v) = cfg.admin_addr {
-            if let Ok(a) = v.parse() { args.admin_addr = a; }
+            if let Ok(a) = v.parse() {
+                args.admin_addr = a;
+            }
         }
     }
     if args.base_domain == "localhost" {
-        if let Some(ref v) = cfg.base_domain { args.base_domain = v.clone(); }
+        if let Some(ref v) = cfg.base_domain {
+            args.base_domain = v.clone();
+        }
     }
     if args.store == "seamless-relay.json" {
-        if let Some(ref v) = cfg.store { args.store = v.clone(); }
+        if let Some(ref v) = cfg.store {
+            args.store = v.clone();
+        }
     }
     if args.log_level == "info" {
-        if let Some(ref v) = cfg.log_level { args.log_level = v.clone(); }
+        if let Some(ref v) = cfg.log_level {
+            args.log_level = v.clone();
+        }
     }
     if args.log_format == "text" {
-        if let Some(ref v) = cfg.log_format { args.log_format = v.clone(); }
+        if let Some(ref v) = cfg.log_format {
+            args.log_format = v.clone();
+        }
     }
     if args.cipher == "chacha20poly1305" {
-        if let Some(ref v) = cfg.cipher { args.cipher = v.clone(); }
+        if let Some(ref v) = cfg.cipher {
+            args.cipher = v.clone();
+        }
     }
     if args.max_tunnels_per_ip == 10 {
-        if let Some(v) = cfg.max_tunnels_per_ip { args.max_tunnels_per_ip = v; }
+        if let Some(v) = cfg.max_tunnels_per_ip {
+            args.max_tunnels_per_ip = v;
+        }
     }
     if args.rate_limit == 10 {
-        if let Some(v) = cfg.rate_limit { args.rate_limit = v; }
+        if let Some(v) = cfg.rate_limit {
+            args.rate_limit = v;
+        }
     }
     if args.max_tunnels == 1000 {
-        if let Some(v) = cfg.max_tunnels { args.max_tunnels = v; }
+        if let Some(v) = cfg.max_tunnels {
+            args.max_tunnels = v;
+        }
     }
     if !args.tls_self_signed {
-        if let Some(v) = cfg.tls_self_signed { args.tls_self_signed = v; }
+        if let Some(v) = cfg.tls_self_signed {
+            args.tls_self_signed = v;
+        }
     }
     // Optional fields — set from file if not already set by CLI/env.
     if args.auth_file.is_none() {
-        if let Some(ref v) = cfg.auth_file { args.auth_file = Some(v.clone()); }
+        if let Some(ref v) = cfg.auth_file {
+            args.auth_file = Some(v.clone());
+        }
     }
     if args.admin_token.is_none() {
-        if let Some(ref v) = cfg.admin_token { args.admin_token = Some(v.clone()); }
+        if let Some(ref v) = cfg.admin_token {
+            args.admin_token = Some(v.clone());
+        }
     }
     if args.https_addr.is_none() {
         if let Some(ref v) = cfg.https_addr {
-            if let Ok(a) = v.parse() { args.https_addr = Some(a); }
+            if let Ok(a) = v.parse() {
+                args.https_addr = Some(a);
+            }
         }
     }
     if args.tls_cert.is_none() {
-        if let Some(ref v) = cfg.tls_cert { args.tls_cert = Some(v.clone()); }
+        if let Some(ref v) = cfg.tls_cert {
+            args.tls_cert = Some(v.clone());
+        }
     }
     if args.tls_key.is_none() {
-        if let Some(ref v) = cfg.tls_key { args.tls_key = Some(v.clone()); }
+        if let Some(ref v) = cfg.tls_key {
+            args.tls_key = Some(v.clone());
+        }
     }
     if args.webhook_url.is_none() {
-        if let Some(ref v) = cfg.webhook_url { args.webhook_url = Some(v.clone()); }
+        if let Some(ref v) = cfg.webhook_url {
+            args.webhook_url = Some(v.clone());
+        }
     }
     if args.admin_allow_cidr.is_none() {
-        if let Some(ref v) = cfg.admin_allow_cidr { args.admin_allow_cidr = Some(v.clone()); }
+        if let Some(ref v) = cfg.admin_allow_cidr {
+            args.admin_allow_cidr = Some(v.clone());
+        }
     }
     if args.admin_tls_cert.is_none() {
-        if let Some(ref v) = cfg.admin_tls_cert { args.admin_tls_cert = Some(v.clone()); }
+        if let Some(ref v) = cfg.admin_tls_cert {
+            args.admin_tls_cert = Some(v.clone());
+        }
     }
     if args.admin_tls_key.is_none() {
-        if let Some(ref v) = cfg.admin_tls_key { args.admin_tls_key = Some(v.clone()); }
+        if let Some(ref v) = cfg.admin_tls_key {
+            args.admin_tls_key = Some(v.clone());
+        }
     }
     if args.admin_client_ca.is_none() {
-        if let Some(ref v) = cfg.admin_client_ca { args.admin_client_ca = Some(v.clone()); }
+        if let Some(ref v) = cfg.admin_client_ca {
+            args.admin_client_ca = Some(v.clone());
+        }
     }
     if args.reserved_subdomains.is_none() {
-        if let Some(ref v) = cfg.reserved_subdomains { args.reserved_subdomains = Some(v.clone()); }
+        if let Some(ref v) = cfg.reserved_subdomains {
+            args.reserved_subdomains = Some(v.clone());
+        }
     }
     if args.subdomain_prefix.is_none() {
-        if let Some(ref v) = cfg.subdomain_prefix { args.subdomain_prefix = Some(v.clone()); }
+        if let Some(ref v) = cfg.subdomain_prefix {
+            args.subdomain_prefix = Some(v.clone());
+        }
     }
     if args.subdomain_length == 8 {
-        if let Some(v) = cfg.subdomain_length { args.subdomain_length = v; }
+        if let Some(v) = cfg.subdomain_length {
+            args.subdomain_length = v;
+        }
     }
     if args.tunnel_max_age == 0 {
-        if let Some(v) = cfg.tunnel_max_age { args.tunnel_max_age = v; }
+        if let Some(v) = cfg.tunnel_max_age {
+            args.tunnel_max_age = v;
+        }
     }
     if args.max_body_size == 10 * 1024 * 1024 {
-        if let Some(v) = cfg.max_body_size { args.max_body_size = v; }
+        if let Some(v) = cfg.max_body_size {
+            args.max_body_size = v;
+        }
     }
     if args.blocklist_file.is_none() {
-        if let Some(ref v) = cfg.blocklist_file { args.blocklist_file = Some(v.clone()); }
+        if let Some(ref v) = cfg.blocklist_file {
+            args.blocklist_file = Some(v.clone());
+        }
     }
     if args.ip_denylist_file.is_none() {
-        if let Some(ref v) = cfg.ip_denylist_file { args.ip_denylist_file = Some(v.clone()); }
+        if let Some(ref v) = cfg.ip_denylist_file {
+            args.ip_denylist_file = Some(v.clone());
+        }
     }
     if args.audit_log.is_none() {
-        if let Some(ref v) = cfg.audit_log { args.audit_log = Some(v.clone()); }
+        if let Some(ref v) = cfg.audit_log {
+            args.audit_log = Some(v.clone());
+        }
     }
     if args.tunnel_keepalive == 30 {
-        if let Some(v) = cfg.tunnel_keepalive { args.tunnel_keepalive = v; }
+        if let Some(v) = cfg.tunnel_keepalive {
+            args.tunnel_keepalive = v;
+        }
     }
     if args.acme_email.is_none() {
-        if let Some(ref v) = cfg.acme_email { args.acme_email = Some(v.clone()); }
+        if let Some(ref v) = cfg.acme_email {
+            args.acme_email = Some(v.clone());
+        }
     }
     if args.acme_domains.is_none() {
-        if let Some(ref v) = cfg.acme_domains { args.acme_domains = Some(v.clone()); }
+        if let Some(ref v) = cfg.acme_domains {
+            args.acme_domains = Some(v.clone());
+        }
     }
     if args.acme_dir.is_none() {
-        if let Some(ref v) = cfg.acme_dir { args.acme_dir = Some(v.clone()); }
+        if let Some(ref v) = cfg.acme_dir {
+            args.acme_dir = Some(v.clone());
+        }
     }
     if args.cloudflare_api_token.is_none() {
-        if let Some(ref v) = cfg.cloudflare_api_token { args.cloudflare_api_token = Some(v.clone()); }
+        if let Some(ref v) = cfg.cloudflare_api_token {
+            args.cloudflare_api_token = Some(v.clone());
+        }
     }
     if !args.acme_production {
-        if let Some(v) = cfg.acme_production { args.acme_production = v; }
+        if let Some(v) = cfg.acme_production {
+            args.acme_production = v;
+        }
     }
     if !args.allow_custom_domains {
-        if let Some(v) = cfg.allow_custom_domains { args.allow_custom_domains = v; }
+        if let Some(v) = cfg.allow_custom_domains {
+            args.allow_custom_domains = v;
+        }
     }
     if args.custom_domain_allowlist.is_none() {
-        if let Some(ref v) = cfg.custom_domain_allowlist { args.custom_domain_allowlist = Some(v.clone()); }
+        if let Some(ref v) = cfg.custom_domain_allowlist {
+            args.custom_domain_allowlist = Some(v.clone());
+        }
     }
     if args.tcp_passthrough.is_empty() {
-        if let Some(ref v) = cfg.tcp_passthrough { args.tcp_passthrough = v.clone(); }
+        if let Some(ref v) = cfg.tcp_passthrough {
+            args.tcp_passthrough = v.clone();
+        }
     }
     if args.geoip_db.is_none() {
-        if let Some(ref v) = cfg.geoip_db { args.geoip_db = Some(v.clone()); }
+        if let Some(ref v) = cfg.geoip_db {
+            args.geoip_db = Some(v.clone());
+        }
     }
     if args.block_countries.is_none() {
-        if let Some(ref v) = cfg.block_countries { args.block_countries = Some(v.clone()); }
+        if let Some(ref v) = cfg.block_countries {
+            args.block_countries = Some(v.clone());
+        }
     }
 }
 
@@ -638,7 +723,11 @@ pub fn parse_cidr(s: &str) -> Option<(u32, u32)> {
     let prefix_len: u32 = prefix_len_str.parse().ok().filter(|&n| n <= 32)?;
     let ip: std::net::Ipv4Addr = ip_str.parse().ok()?;
     let ip_u32 = u32::from(ip);
-    let mask = if prefix_len == 0 { 0 } else { !0u32 << (32 - prefix_len) };
+    let mask = if prefix_len == 0 {
+        0
+    } else {
+        !0u32 << (32 - prefix_len)
+    };
     Some((ip_u32 & mask, mask))
 }
 
@@ -673,7 +762,10 @@ async fn main() -> Result<()> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| format!("{},seamless_relay=debug", args.log_level).into());
     if args.log_format == "json" {
-        tracing_subscriber::fmt().json().with_env_filter(env_filter).init();
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(env_filter)
+            .init();
     } else {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
@@ -711,7 +803,8 @@ async fn main() -> Result<()> {
     let custom_domains: CustomDomainMap = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
 
     // Parse custom domain allowlist.
-    let custom_domain_allowlist: std::collections::HashSet<String> = args.custom_domain_allowlist
+    let custom_domain_allowlist: std::collections::HashSet<String> = args
+        .custom_domain_allowlist
         .as_deref()
         .unwrap_or("")
         .split(',')
@@ -721,10 +814,14 @@ async fn main() -> Result<()> {
     if args.allow_custom_domains {
         info!("custom-domains: open mode — clients may register any custom domain");
     } else if !custom_domain_allowlist.is_empty() {
-        info!("custom-domains: allowlist mode ({} domain(s))", custom_domain_allowlist.len());
+        info!(
+            "custom-domains: allowlist mode ({} domain(s))",
+            custom_domain_allowlist.len()
+        );
     }
 
-    let admin_cidrs: Vec<(u32, u32)> = args.admin_allow_cidr
+    let admin_cidrs: Vec<(u32, u32)> = args
+        .admin_allow_cidr
         .as_deref()
         .unwrap_or("")
         .split(',')
@@ -732,14 +829,18 @@ async fn main() -> Result<()> {
         .filter_map(parse_cidr)
         .collect();
     if !admin_cidrs.is_empty() {
-        info!("admin: IP allowlist active ({} CIDR(s) configured)", admin_cidrs.len());
+        info!(
+            "admin: IP allowlist active ({} CIDR(s) configured)",
+            admin_cidrs.len()
+        );
     } else {
         info!("admin: no IP allowlist configured — all IPs permitted");
     }
 
     // Parse reserved subdomains list.
     let reserved_subdomains = {
-        let list: Vec<String> = args.reserved_subdomains
+        let list: Vec<String> = args
+            .reserved_subdomains
             .as_deref()
             .unwrap_or("")
             .split(',')
@@ -758,7 +859,11 @@ async fn main() -> Result<()> {
 
     // Parse subdomain prefix requirement.
     let subdomain_prefix = {
-        let p = args.subdomain_prefix.as_ref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+        let p = args
+            .subdomain_prefix
+            .as_ref()
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty());
         if let Some(ref pstr) = p {
             info!("subdomain prefix: all client-requested subdomains must start with '{pstr}'");
         }
@@ -829,7 +934,8 @@ async fn main() -> Result<()> {
     };
 
     // Build geo-IP filter.
-    let blocked_countries: Vec<String> = args.block_countries
+    let blocked_countries: Vec<String> = args
+        .block_countries
         .as_deref()
         .unwrap_or("")
         .split(',')
@@ -907,13 +1013,12 @@ async fn main() -> Result<()> {
     let admin_tls = match (&args.admin_tls_cert, &args.admin_tls_key) {
         (Some(cert), Some(key)) => {
             let mtls = args.admin_client_ca.is_some();
-            let acceptor = tls::admin_tls_acceptor(
-                cert,
-                key,
-                args.admin_client_ca.as_deref(),
-            )?;
+            let acceptor = tls::admin_tls_acceptor(cert, key, args.admin_client_ca.as_deref())?;
             if mtls {
-                info!("admin mTLS: enabled — client certificates required (CA: {})", args.admin_client_ca.as_deref().unwrap_or("?"));
+                info!(
+                    "admin mTLS: enabled — client certificates required (CA: {})",
+                    args.admin_client_ca.as_deref().unwrap_or("?")
+                );
             } else {
                 info!("admin TLS: enabled — serving admin port over TLS 1.3");
             }
@@ -954,7 +1059,9 @@ async fn main() -> Result<()> {
                 pt_geoip,
                 pt_metrics,
                 pt_audit,
-            ).await {
+            )
+            .await
+            {
                 tracing::error!("tcp-passthrough listener died: {e:#}");
             }
         });
@@ -974,8 +1081,9 @@ async fn main() -> Result<()> {
             tls::self_signed_acceptor(&[&args.base_domain])
                 .context("failed to generate self-signed TLS cert")?
         } else if let (Some(cert), Some(key)) = (&args.tls_cert, &args.tls_key) {
-            tls::acceptor_from_files(cert, key)
-                .with_context(|| format!("failed to load TLS cert from '{cert}' / key from '{key}'"))?
+            tls::acceptor_from_files(cert, key).with_context(|| {
+                format!("failed to load TLS cert from '{cert}' / key from '{key}'")
+            })?
         } else {
             return Err(anyhow!(
                 "--https-addr requires either --tls-self-signed or both --tls-cert and --tls-key"
@@ -983,22 +1091,24 @@ async fn main() -> Result<()> {
         };
 
         // Wrap in a hot-swappable acceptor so SIGUSR1 can rotate the cert.
-        let hot_acceptor: ingress::HotAcceptor =
-            Arc::new(std::sync::RwLock::new(base_acceptor));
+        let hot_acceptor: ingress::HotAcceptor = Arc::new(std::sync::RwLock::new(base_acceptor));
 
         // SIGUSR1 → hot-reload TLS cert/key from disk without dropping connections.
         #[cfg(unix)]
         {
             let hot = hot_acceptor.clone();
             let cert_path = args.tls_cert.clone();
-            let key_path  = args.tls_key.clone();
+            let key_path = args.tls_key.clone();
             let self_signed = args.tls_self_signed;
             let base_domain_for_reload = args.base_domain.clone();
             tokio::spawn(async move {
-                use tokio::signal::unix::{SignalKind, signal};
+                use tokio::signal::unix::{signal, SignalKind};
                 let mut sigusr1 = match signal(SignalKind::user_defined1()) {
                     Ok(s) => s,
-                    Err(e) => { warn!("SIGUSR1 handler failed to register: {e}"); return; }
+                    Err(e) => {
+                        warn!("SIGUSR1 handler failed to register: {e}");
+                        return;
+                    }
                 };
                 loop {
                     sigusr1.recv().await;
@@ -1017,7 +1127,9 @@ async fn main() -> Result<()> {
                             info!("SIGUSR1: TLS certificate rotated successfully — new connections use new cert");
                         }
                         Err(e) => {
-                            warn!("SIGUSR1: TLS cert reload failed (keeping old cert active): {e:#}");
+                            warn!(
+                                "SIGUSR1: TLS cert reload failed (keeping old cert active): {e:#}"
+                            );
                         }
                     }
                 }
@@ -1027,7 +1139,8 @@ async fn main() -> Result<()> {
         info!("tls: starting https ingress on {https_addr}");
         let https_state = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = ingress::run_https_ingress(https_addr, hot_acceptor, https_state).await {
+            if let Err(e) = ingress::run_https_ingress(https_addr, hot_acceptor, https_state).await
+            {
                 tracing::error!("https ingress died: {e:#}");
             }
         });
@@ -1035,7 +1148,8 @@ async fn main() -> Result<()> {
 
     // ── ACME / Let's Encrypt certificate provisioning ─────────────────────────
     if let Some(ref acme_email) = args.acme_email {
-        let domains: Vec<String> = args.acme_domains
+        let domains: Vec<String> = args
+            .acme_domains
             .as_deref()
             .unwrap_or(&args.base_domain)
             .split(',')
@@ -1058,7 +1172,11 @@ async fn main() -> Result<()> {
         info!(
             "acme: configured for domains {:?} ({})",
             acme_cfg.domains,
-            if args.acme_production { "production" } else { "staging" }
+            if args.acme_production {
+                "production"
+            } else {
+                "staging"
+            }
         );
 
         let acme_client = Arc::new(acme::AcmeClient::new(acme_cfg, state.audit_log.clone()));
@@ -1110,7 +1228,7 @@ async fn main() -> Result<()> {
         let blocklist_for_sighup = blocklist.clone();
         let denylist_for_sighup = ip_denylist.clone();
         tokio::spawn(async move {
-            use tokio::signal::unix::{SignalKind, signal};
+            use tokio::signal::unix::{signal, SignalKind};
             let mut sighup = signal(SignalKind::hangup()).expect("SIGHUP handler");
             loop {
                 sighup.recv().await;
@@ -1186,12 +1304,15 @@ async fn main() -> Result<()> {
             loop {
                 interval.tick().await;
                 let active_tunnels = tunnels_for_stats.lock().await.len() as u64;
-                let total_connections = metrics_for_stats.connections_total.load(std::sync::atomic::Ordering::Relaxed);
+                let total_connections = metrics_for_stats
+                    .connections_total
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 hist.push(StatsSnapshot {
                     ts: crate::store::unix_now(),
                     active_tunnels,
                     total_connections,
-                }).await;
+                })
+                .await;
             }
         });
     }
@@ -1201,7 +1322,7 @@ async fn main() -> Result<()> {
     {
         let tunnels_for_shutdown = tunnels.clone();
         tokio::spawn(async move {
-            use tokio::signal::unix::{SignalKind, signal};
+            use tokio::signal::unix::{signal, SignalKind};
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
             sigterm.recv().await;
             info!("SIGTERM received — disconnecting all tunnels and shutting down");
@@ -1286,8 +1407,9 @@ async fn load_or_create_identity(
 
     if let Some(hex) = saved_hex {
         let bytes = hex::decode(&hex).map_err(|_| anyhow!("invalid identity hex in store"))?;
-        let identity = IdentityKeypair::from_bytes(&bytes)
-            .ok_or_else(|| anyhow!("corrupt identity in store — delete seamless-relay.json to regenerate"))?;
+        let identity = IdentityKeypair::from_bytes(&bytes).ok_or_else(|| {
+            anyhow!("corrupt identity in store — delete seamless-relay.json to regenerate")
+        })?;
         info!("loaded persistent relay identity from store");
         return Ok(identity);
     }
