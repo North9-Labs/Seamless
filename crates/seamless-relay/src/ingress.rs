@@ -290,8 +290,14 @@ where
         return Ok(());
     }
 
-    // 2. Check tunnel registry (Seam-backed subdomains).
-    let sub = extract_subdomain(&host, &state.base_domain);
+    // 2. Check tunnel registry — first try custom_domains, then subdomain routing.
+    let sub = {
+        // Strip port from host before lookup.
+        let host_only = host.split(':').next().unwrap_or(&host).to_lowercase();
+        // Check custom domains map first.
+        let from_custom = state.custom_domains.read().await.get(&host_only).cloned();
+        from_custom.or_else(|| extract_subdomain(&host, &state.base_domain))
+    };
     if let Some(sub) = sub {
         let entry = {
             let t = state.tunnels.lock().await;

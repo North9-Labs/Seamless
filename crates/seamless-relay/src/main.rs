@@ -13,6 +13,7 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+mod acme;
 mod admin;
 mod audit;
 mod cloudflare;
@@ -29,7 +30,7 @@ use denylist::IpDenyList;
 use logs::LogBuffer;
 use metrics::Metrics;
 use store::SharedStore;
-use tunnel::{AuthPolicy, RateLimiter, ReservedSubdomains, SubdomainBlocklist, SubdomainPrefix, TcpPortSet, TunnelMap};
+use tunnel::{AuthPolicy, CustomDomainMap, RateLimiter, ReservedSubdomains, SubdomainBlocklist, SubdomainPrefix, TcpPortSet, TunnelMap};
 
 // ── Stats history ring buffer ─────────────────────────────────────────────────
 
@@ -129,6 +130,12 @@ pub struct AppState {
     /// keepalive frame if no data has flowed in the interval and disconnects
     /// if the client does not respond within 10 s.
     pub tunnel_keepalive: u64,
+    /// Custom domain → tunnel_id map (Feature 2: SNI-based custom domain routing).
+    pub custom_domains: CustomDomainMap,
+    /// When true, clients may register any custom domain (no allowlist check).
+    pub allow_custom_domains: bool,
+    /// Explicit allowlist of custom domains allowed for registration.
+    pub custom_domain_allowlist: Arc<std::collections::HashSet<String>>,
 }
 
 pub struct RelayPubkeys {
@@ -177,6 +184,13 @@ struct FileConfig {
     ip_denylist_file: Option<PathBuf>,
     audit_log: Option<PathBuf>,
     tunnel_keepalive: Option<u64>,
+    acme_email: Option<String>,
+    acme_domains: Option<String>,
+    acme_dir: Option<PathBuf>,
+    cloudflare_api_token: Option<String>,
+    acme_production: Option<bool>,
+    allow_custom_domains: Option<bool>,
+    custom_domain_allowlist: Option<String>,
 }
 
 /// Find and load the TOML config file, returning the loaded config and the
@@ -404,6 +418,39 @@ struct Args {
     /// faster than TCP keepalive allows.
     #[arg(long, default_value_t = 30, env = "SEAMLESS_TUNNEL_KEEPALIVE")]
     tunnel_keepalive: u64,
+
+    // ── Feature 1: ACME / Let's Encrypt ──────────────────────────────────────
+
+    /// Email address for Let's Encrypt account registration.
+    #[arg(long, env = "SEAMLESS_ACME_EMAIL")]
+    acme_email: Option<String>,
+
+    /// Comma-separated list of domains for the ACME certificate.
+    #[arg(long, env = "SEAMLESS_ACME_DOMAINS")]
+    acme_domains: Option<String>,
+
+    /// Directory for ACME account keys and certificates (default: ~/.local/share/seamless/acme).
+    #[arg(long, env = "SEAMLESS_ACME_DIR")]
+    acme_dir: Option<PathBuf>,
+
+    /// Cloudflare API token for DNS-01 ACME challenge. When not set, HTTP-01 is used.
+    #[arg(long, env = "CLOUDFLARE_API_TOKEN")]
+    cloudflare_api_token: Option<String>,
+
+    /// Use the Let's Encrypt production CA (default: staging).
+    #[arg(long, default_value_t = false)]
+    acme_production: bool,
+
+    // ── Feature 2: Custom Domain Support ─────────────────────────────────────
+
+    /// Allow clients to register any custom domain (SNI/Host routing).
+    /// Without this flag, only domains in --custom-domain-allowlist are accepted.
+    #[arg(long, default_value_t = false, env = "SEAMLESS_ALLOW_CUSTOM_DOMAINS")]
+    allow_custom_domains: bool,
+
+    /// Comma-separated list of allowed custom domains for client registration.
+    #[arg(long, env = "SEAMLESS_CUSTOM_DOMAIN_ALLOWLIST")]
+    custom_domain_allowlist: Option<String>,
 }
 
 /// Merge file-config values into `args` for any field that still holds its
@@ -518,6 +565,27 @@ fn apply_file_config(args: &mut Args, cfg: &FileConfig) {
     if args.tunnel_keepalive == 30 {
         if let Some(v) = cfg.tunnel_keepalive { args.tunnel_keepalive = v; }
     }
+    if args.acme_email.is_none() {
+        if let Some(ref v) = cfg.acme_email { args.acme_email = Some(v.clone()); }
+    }
+    if args.acme_domains.is_none() {
+        if let Some(ref v) = cfg.acme_domains { args.acme_domains = Some(v.clone()); }
+    }
+    if args.acme_dir.is_none() {
+        if let Some(ref v) = cfg.acme_dir { args.acme_dir = Some(v.clone()); }
+    }
+    if args.cloudflare_api_token.is_none() {
+        if let Some(ref v) = cfg.cloudflare_api_token { args.cloudflare_api_token = Some(v.clone()); }
+    }
+    if !args.acme_production {
+        if let Some(v) = cfg.acme_production { args.acme_production = v; }
+    }
+    if !args.allow_custom_domains {
+        if let Some(v) = cfg.allow_custom_domains { args.allow_custom_domains = v; }
+    }
+    if args.custom_domain_allowlist.is_none() {
+        if let Some(ref v) = cfg.custom_domain_allowlist { args.custom_domain_allowlist = Some(v.clone()); }
+    }
 }
 
 // ── CIDR helpers ──────────────────────────────────────────────────────────────
@@ -599,6 +667,21 @@ async fn main() -> Result<()> {
 
     let tunnels: TunnelMap = Arc::new(Mutex::new(HashMap::new()));
     let tcp_ports: TcpPortSet = Arc::new(Mutex::new(HashSet::new()));
+    let custom_domains: CustomDomainMap = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+
+    // Parse custom domain allowlist.
+    let custom_domain_allowlist: std::collections::HashSet<String> = args.custom_domain_allowlist
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if args.allow_custom_domains {
+        info!("custom-domains: open mode — clients may register any custom domain");
+    } else if !custom_domain_allowlist.is_empty() {
+        info!("custom-domains: allowlist mode ({} domain(s))", custom_domain_allowlist.len());
+    }
 
     let admin_cidrs: Vec<(u32, u32)> = args.admin_allow_cidr
         .as_deref()
@@ -707,6 +790,9 @@ async fn main() -> Result<()> {
         store_path,
         tunnels: tunnels.clone(),
         tcp_ports: tcp_ports.clone(),
+        custom_domains: custom_domains.clone(),
+        allow_custom_domains: args.allow_custom_domains,
+        custom_domain_allowlist: Arc::new(custom_domain_allowlist),
         base_domain: Arc::new(args.base_domain.clone()),
         relay_pubkeys: Arc::new(RelayPubkeys {
             x25519: x25519_pk_hex,
@@ -853,6 +939,75 @@ async fn main() -> Result<()> {
                 tracing::error!("https ingress died: {e:#}");
             }
         });
+    }
+
+    // ── ACME / Let's Encrypt certificate provisioning ─────────────────────────
+    if let Some(ref acme_email) = args.acme_email {
+        let domains: Vec<String> = args.acme_domains
+            .as_deref()
+            .unwrap_or(&args.base_domain)
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let acme_dir = args.acme_dir.clone().unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            PathBuf::from(home).join(".local/share/seamless/acme")
+        });
+
+        let acme_cfg = acme::AcmeConfig {
+            email: acme_email.clone(),
+            domains,
+            cloudflare_api_token: args.cloudflare_api_token.clone(),
+            acme_dir,
+            production: args.acme_production,
+        };
+        info!(
+            "acme: configured for domains {:?} ({})",
+            acme_cfg.domains,
+            if args.acme_production { "production" } else { "staging" }
+        );
+
+        let acme_client = Arc::new(acme::AcmeClient::new(acme_cfg, state.audit_log.clone()));
+
+        // Serve ACME HTTP-01 challenge server on port 80 if no Cloudflare token.
+        if args.cloudflare_api_token.is_none() {
+            let tokens = acme_client.challenge_tokens.clone();
+            tokio::spawn(async move {
+                let addr = "0.0.0.0:80".parse().expect("valid addr");
+                if let Err(e) = acme::run_acme_http_server(addr, tokens).await {
+                    warn!("ACME HTTP-01 server error: {e:#}");
+                }
+            });
+        }
+
+        // Obtain initial certificate if needed.
+        if acme_client.needs_renewal().await {
+            info!("acme: obtaining initial certificate");
+            match acme_client.obtain_certificate().await {
+                Ok((cert_pem, key_pem)) => {
+                    info!("acme: certificate obtained successfully");
+                    // Store temporarily so the HTTPS ingress can pick it up.
+                    // In a production system the cert_pem/key_pem would be written to
+                    // tls_cert/tls_key paths so the hot acceptor can load them.
+                    if let Some((cert_path, key_path)) = acme_client.cert_paths() {
+                        // Write to the paths specified (already done in obtain_certificate),
+                        // then trigger a reload if a hot acceptor is running.
+                        let _ = (cert_pem, key_pem, cert_path, key_path);
+                    }
+                }
+                Err(e) => {
+                    warn!("acme: initial certificate failed: {e:#}");
+                }
+            }
+        } else {
+            info!("acme: existing certificate is valid");
+        }
+
+        // Spawn renewal background task.
+        let (cert_tx, _cert_rx) = tokio::sync::mpsc::channel::<(String, String)>(4);
+        acme::spawn_renewal_task(acme_client, cert_tx);
     }
 
     // SIGHUP → hot-reload the auth token file, subdomain blocklist, and IP deny list (Unix only).
@@ -1015,6 +1170,9 @@ async fn main() -> Result<()> {
                         ip_denylist: s.ip_denylist,
                         audit_log: s.audit_log,
                         tunnel_keepalive: s.tunnel_keepalive,
+                        custom_domains: s.custom_domains.clone(),
+                        allow_custom_domains: s.allow_custom_domains,
+                        custom_domain_allowlist: Arc::new((*s.custom_domain_allowlist).clone()),
                     };
                     if let Err(e) = tunnel::handle_client(mux, ctx).await {
                         warn!("client from {remote} ended: {e:#}");

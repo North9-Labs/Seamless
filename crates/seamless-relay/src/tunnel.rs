@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -244,14 +244,51 @@ pub struct ConnCtx {
     pub audit_log: AuditLog,
     /// Keepalive interval in seconds (0 = disabled).
     pub tunnel_keepalive: u64,
+    /// Custom domain → tunnel_id map for SNI/Host routing.
+    pub custom_domains: CustomDomainMap,
+    /// When `true`, clients may register any custom domain.
+    pub allow_custom_domains: bool,
+    /// Explicit allowlist of custom domains (empty = check allow_custom_domains flag).
+    pub custom_domain_allowlist: Arc<HashSet<String>>,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
+
+/// One backend target in a load-balanced tunnel.
+pub struct BackendEntry {
+    /// Unique identifier for this backend.
+    pub id: String,
+    /// TCP address of the backend.
+    pub addr: SocketAddr,
+    /// Weight for weighted round-robin selection (higher = more traffic).
+    pub weight: u32,
+    /// Whether this backend is currently considered healthy.
+    pub healthy: AtomicBool,
+    /// Total requests routed to this backend.
+    pub requests: AtomicU64,
+    /// Total errors encountered on this backend.
+    pub errors: AtomicU64,
+}
+
+impl BackendEntry {
+    pub fn new(addr: SocketAddr, weight: u32) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            addr,
+            weight,
+            healthy: AtomicBool::new(true),
+            requests: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+        }
+    }
+}
 
 /// Per-tunnel state shared between the tunnel task and the admin API.
 pub struct TunnelEntry {
     pub mux: Arc<SeamMux>,
     pub subdomain: String,
+    /// Optional custom domain (e.g. `api.mycorp.com`) registered by the client.
+    pub custom_domain: Option<String>,
     /// UTC Unix timestamp (seconds) when the tunnel was registered.
     pub connected_at: i64,
     /// IP address of the Seam client.
@@ -264,10 +301,45 @@ pub struct TunnelEntry {
     pub paused: Arc<AtomicBool>,
     /// Allows the admin API to forcibly disconnect this tunnel.
     pub disconnect_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    /// Additional load-balanced backends for this tunnel.
+    /// The primary backend is the SeamMux; these are extra TCP targets.
+    pub backends: Arc<tokio::sync::RwLock<Vec<Arc<BackendEntry>>>>,
+    /// Atomic counter for round-robin backend selection.
+    pub rr_counter: Arc<AtomicU64>,
+}
+
+impl TunnelEntry {
+    /// Select the next healthy backend using weighted round-robin.
+    /// Returns `None` if no healthy backends are registered (fall through to primary mux).
+    pub async fn select_backend(&self) -> Option<Arc<BackendEntry>> {
+        let backends = self.backends.read().await;
+        let healthy: Vec<&Arc<BackendEntry>> = backends
+            .iter()
+            .filter(|b| b.healthy.load(AtomicOrdering::Relaxed))
+            .collect();
+        if healthy.is_empty() {
+            return None;
+        }
+        // Build a weighted list.
+        let total_weight: u32 = healthy.iter().map(|b| b.weight.max(1)).sum();
+        let counter = self.rr_counter.fetch_add(1, AtomicOrdering::Relaxed);
+        let mut slot = (counter % total_weight as u64) as u32;
+        for b in &healthy {
+            let w = b.weight.max(1);
+            if slot < w {
+                return Some(Arc::clone(b));
+            }
+            slot -= w;
+        }
+        // Fallback: first healthy backend.
+        healthy.first().map(|b| Arc::clone(b))
+    }
 }
 
 pub type TunnelMap = Arc<Mutex<HashMap<String, Arc<TunnelEntry>>>>;
 pub type TcpPortSet = Arc<Mutex<HashSet<u16>>>;
+/// Maps `custom_domain → tunnel_subdomain_key`.
+pub type CustomDomainMap = Arc<tokio::sync::RwLock<HashMap<String, String>>>;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -399,7 +471,8 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
         tunnels, tcp_ports, base_domain, http_port, https_port, auth, metrics, client_ip,
         webhook_url, http_client, max_tunnels_per_ip, rate_limiter, max_tunnels,
         reserved_subdomains, subdomain_prefix, subdomain_length, blocklist,
-        ip_denylist, audit_log, tunnel_keepalive,
+        ip_denylist, audit_log, tunnel_keepalive, custom_domains,
+        allow_custom_domains, custom_domain_allowlist,
     } = ctx;
     let webhook = WebhookCtx { url: webhook_url, client: http_client };
     let t0 = Instant::now();
@@ -588,7 +661,7 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     match kind {
         TunnelKind::Http { subdomain } => {
-            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook, &reserved_subdomains, &subdomain_prefix, subdomain_length, &blocklist, &audit_log, tunnel_keepalive).await
+            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook, &reserved_subdomains, &subdomain_prefix, subdomain_length, &blocklist, &audit_log, tunnel_keepalive, custom_domains, allow_custom_domains, &custom_domain_allowlist).await
         }
         TunnelKind::Tcp { port } => {
             serve_tcp(mux, control, tunnels, tcp_ports, &base_domain, port, metrics, &client_ip, webhook, &audit_log, tunnel_keepalive).await
@@ -631,6 +704,9 @@ async fn serve_http(
     blocklist: &SubdomainBlocklist,
     audit_log: &AuditLog,
     tunnel_keepalive: u64,
+    custom_domains: CustomDomainMap,
+    _allow_custom_domains: bool,
+    _custom_domain_allowlist: &HashSet<String>,
 ) -> Result<()> {
     // Validate client-requested subdomains before falling back to random.
     if let Some(ref requested) = subdomain {
@@ -721,6 +797,10 @@ async fn serve_http(
         format!("http://{sub}.{base_domain}:{http_port}")
     };
 
+    // No custom_domain from this path (custom domains are registered via
+    // the admin API's POST /api/tunnels/{id}/custom-domain endpoint).
+    let custom_domain: Option<String> = None;
+
     let (disconnect_tx, disconnect_rx) = oneshot::channel::<()>();
 
     let bytes_in = Arc::new(AtomicU64::new(0));
@@ -730,12 +810,15 @@ async fn serve_http(
     let entry = Arc::new(TunnelEntry {
         mux: mux.clone(),
         subdomain: sub.clone(),
+        custom_domain: custom_domain.clone(),
         connected_at: crate::store::unix_now(),
         client_ip: client_ip.to_string(),
         bytes_in: bytes_in.clone(),
         bytes_out: bytes_out.clone(),
         paused: paused.clone(),
         disconnect_tx: Arc::new(Mutex::new(Some(disconnect_tx))),
+        backends: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+        rr_counter: Arc::new(AtomicU64::new(0)),
     });
 
     {
@@ -753,6 +836,23 @@ async fn serve_http(
             return Err(anyhow!("subdomain taken"));
         }
         t.insert(sub.clone(), entry);
+    }
+
+    // Register custom domain mapping.
+    if let Some(ref cd) = custom_domain {
+        custom_domains.write().await.insert(cd.clone(), sub.clone());
+        info!(
+            event = "custom_domain.registered",
+            domain = %cd,
+            subdomain = %sub,
+            client_ip = %client_ip,
+            "custom domain '{cd}' registered for tunnel '{sub}'"
+        );
+        crate::audit_event!(audit_log, "custom_domain.registered",
+            "domain" => cd.as_str(),
+            "subdomain" => sub.as_str(),
+            "client_ip" => client_ip
+        );
     }
 
     write_frame(&mut control, &ControlFrame::Registered { public_url: url.clone() }).await?;
@@ -822,6 +922,10 @@ async fn serve_http(
     }
 
     tunnels.lock().await.remove(&sub);
+    // Remove custom domain mapping on tunnel close.
+    if let Some(ref cd) = custom_domain {
+        custom_domains.write().await.remove(cd);
+    }
     let duration_secs = crate::store::unix_now() - connected_at;
     let bytes_in_final = bytes_in.load(std::sync::atomic::Ordering::Relaxed);
     let bytes_out_final = bytes_out.load(std::sync::atomic::Ordering::Relaxed);
@@ -935,12 +1039,15 @@ async fn serve_tcp(
     let entry = Arc::new(TunnelEntry {
         mux: mux.clone(),
         subdomain: tunnel_key.clone(),
+        custom_domain: None,
         connected_at: crate::store::unix_now(),
         client_ip: client_ip.to_string(),
         bytes_in: bytes_in.clone(),
         bytes_out: bytes_out.clone(),
         paused: Arc::new(AtomicBool::new(false)),
         disconnect_tx: Arc::new(Mutex::new(Some(disconnect_tx))),
+        backends: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+        rr_counter: Arc::new(AtomicU64::new(0)),
     });
     tunnels.lock().await.insert(tunnel_key.clone(), entry);
 

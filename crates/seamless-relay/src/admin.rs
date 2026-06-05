@@ -61,6 +61,13 @@ pub async fn start_admin(
         .route("/admin/tunnels/{id}/resume", post(admin_resume_tunnel))
         // Audit log query endpoint — returns recent in-memory audit events as JSONL
         .route("/admin/audit", get(admin_audit_query))
+        // Custom domain registry (Feature 2)
+        .route("/api/custom-domains", get(list_custom_domains))
+        .route("/api/tunnels/{id}/custom-domain", post(set_custom_domain).delete(remove_custom_domain))
+        // Backend management (Feature 3)
+        .route("/api/tunnels/{id}/backends", get(list_backends).post(add_backend))
+        .route("/api/tunnels/{id}/backends/{backend_id}", delete(remove_backend))
+        .route("/api/tunnels/{id}/backends/{backend_id}/health", post(force_health_check))
         // Logs + route health (logs protected by admin token)
         .route("/api/logs", get(get_logs))
         .route("/api/routes/health", get(health_routes))
@@ -1060,4 +1067,333 @@ async fn cf_delete_dns(
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e).into_response(),
     }
+}
+
+// ── Feature 2: Custom Domain Registry ────────────────────────────────────────
+
+/// `GET /api/custom-domains` — list all registered custom domains with tunnel mapping.
+async fn list_custom_domains(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let map = s.custom_domains.read().await;
+    let entries: Vec<serde_json::Value> = map
+        .iter()
+        .map(|(domain, tunnel_id)| {
+            serde_json::json!({
+                "custom_domain": domain,
+                "tunnel_id": tunnel_id,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "custom_domains": entries, "count": entries.len() })).into_response()
+}
+
+#[derive(Deserialize)]
+struct SetCustomDomainReq {
+    domain: String,
+}
+
+/// `POST /api/tunnels/{id}/custom-domain` — register a custom domain for a tunnel.
+async fn set_custom_domain(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(tunnel_id): Path<String>,
+    Json(req): Json<SetCustomDomainReq>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let domain = req.domain.trim().to_lowercase();
+    if domain.is_empty() || !domain.contains('.') {
+        return bad_request("domain must be a valid FQDN").into_response();
+    }
+
+    // Verify the tunnel exists.
+    let tunnel_exists = {
+        let t = s.tunnels.lock().await;
+        t.contains_key(&tunnel_id)
+    };
+    if !tunnel_exists {
+        return not_found().into_response();
+    }
+
+    // Check allowlist if not in open mode.
+    if !s.allow_custom_domains {
+        if !s.custom_domain_allowlist.contains(&domain) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": format!("domain '{domain}' is not in the allowlist") })),
+            ).into_response();
+        }
+    }
+
+    // Register in the custom_domains map and also update the TunnelEntry.
+    s.custom_domains.write().await.insert(domain.clone(), tunnel_id.clone());
+
+    // Update the TunnelEntry.
+    if let Some(entry) = s.tunnels.lock().await.get(&tunnel_id).cloned() {
+        // We can't mutate custom_domain on the Arc directly; we use a separate map.
+        // The ingress will look up the custom_domains map at request time.
+        let _ = entry; // entry lookup was just for existence check
+    }
+
+    tracing::info!(
+        event = "custom_domain.registered",
+        domain = %domain,
+        tunnel_id = %tunnel_id,
+        "custom domain '{domain}' registered for tunnel '{tunnel_id}' via admin API"
+    );
+    crate::audit_event!(s.audit_log, "custom_domain.registered",
+        "domain" => domain.as_str(),
+        "tunnel_id" => tunnel_id.as_str()
+    );
+
+    (StatusCode::CREATED, Json(serde_json::json!({
+        "custom_domain": domain,
+        "tunnel_id": tunnel_id,
+    }))).into_response()
+}
+
+/// `DELETE /api/tunnels/{id}/custom-domain` — remove a custom domain registration.
+async fn remove_custom_domain(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(tunnel_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let mut map = s.custom_domains.write().await;
+    let removed: Vec<String> = map
+        .iter()
+        .filter(|(_, tid)| **tid == tunnel_id)
+        .map(|(d, _)| d.clone())
+        .collect();
+    for domain in &removed {
+        map.remove(domain);
+    }
+    if removed.is_empty() {
+        return not_found().into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+// ── Feature 3: Load Balancing — Backend Management ────────────────────────────
+
+use crate::tunnel::BackendEntry;
+use std::sync::atomic::Ordering as AOrd;
+
+/// `GET /api/tunnels/{id}/backends` — list backends with health status and request counts.
+async fn list_backends(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(tunnel_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&tunnel_id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    let backends = entry.backends.read().await;
+    let list: Vec<serde_json::Value> = backends
+        .iter()
+        .map(|b| serde_json::json!({
+            "id": b.id,
+            "addr": b.addr.to_string(),
+            "weight": b.weight,
+            "healthy": b.healthy.load(AOrd::Relaxed),
+            "requests": b.requests.load(AOrd::Relaxed),
+            "errors": b.errors.load(AOrd::Relaxed),
+        }))
+        .collect();
+    Json(serde_json::json!({ "backends": list, "count": list.len() })).into_response()
+}
+
+#[derive(Deserialize)]
+struct AddBackendReq {
+    addr: String,
+    #[serde(default = "default_weight")]
+    weight: u32,
+}
+
+fn default_weight() -> u32 { 1 }
+
+/// `POST /api/tunnels/{id}/backends` — add a backend.
+async fn add_backend(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(tunnel_id): Path<String>,
+    Json(req): Json<AddBackendReq>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let addr: std::net::SocketAddr = match req.addr.parse() {
+        Ok(a) => a,
+        Err(_) => return bad_request("invalid addr — expected host:port").into_response(),
+    };
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&tunnel_id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    let backend = std::sync::Arc::new(BackendEntry::new(addr, req.weight.max(1)));
+    let backend_id = backend.id.clone();
+    entry.backends.write().await.push(backend);
+
+    // Spawn health-check task for the new backend.
+    spawn_backend_health_check(entry.backends.clone(), tunnel_id.clone());
+
+    tracing::info!(
+        event = "backend.added",
+        tunnel_id = %tunnel_id,
+        backend_id = %backend_id,
+        addr = %addr,
+        "backend {addr} added to tunnel {tunnel_id}"
+    );
+
+    (StatusCode::CREATED, Json(serde_json::json!({
+        "id": backend_id,
+        "addr": addr.to_string(),
+        "weight": req.weight.max(1),
+        "healthy": true,
+        "requests": 0_u64,
+        "errors": 0_u64,
+    }))).into_response()
+}
+
+/// `DELETE /api/tunnels/{id}/backends/{backend_id}` — remove a backend.
+async fn remove_backend(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((tunnel_id, backend_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&tunnel_id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    let mut backends = entry.backends.write().await;
+    let before = backends.len();
+    backends.retain(|b| b.id != backend_id);
+    if backends.len() == before {
+        return not_found().into_response();
+    }
+    tracing::info!(
+        event = "backend.removed",
+        tunnel_id = %tunnel_id,
+        backend_id = %backend_id,
+        "backend {backend_id} removed from tunnel {tunnel_id}"
+    );
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// `POST /api/tunnels/{id}/backends/{backend_id}/health` — force a health check.
+async fn force_health_check(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((tunnel_id, backend_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&tunnel_id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    let backends = entry.backends.read().await;
+    let backend = backends.iter().find(|b| b.id == backend_id).cloned();
+    drop(backends);
+    let Some(backend) = backend else {
+        return not_found().into_response();
+    };
+    let healthy = tcp_health_check(backend.addr).await;
+    backend.healthy.store(healthy, AOrd::Relaxed);
+    Json(serde_json::json!({
+        "id": backend.id,
+        "addr": backend.addr.to_string(),
+        "healthy": healthy,
+    })).into_response()
+}
+
+/// Perform a TCP connection check to a backend address.
+async fn tcp_health_check(addr: std::net::SocketAddr) -> bool {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::net::TcpStream::connect(addr),
+    )
+    .await
+    .is_ok_and(|r| r.is_ok())
+}
+
+/// Spawn a background task that periodically health-checks all backends in the list.
+fn spawn_backend_health_check(
+    backends: std::sync::Arc<tokio::sync::RwLock<Vec<std::sync::Arc<BackendEntry>>>>,
+    tunnel_id: String,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await; // discard immediate tick
+        let mut fail_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        loop {
+            interval.tick().await;
+            let list = backends.read().await.clone();
+            if list.is_empty() {
+                break; // No more backends — stop.
+            }
+            for b in &list {
+                let ok = tcp_health_check(b.addr).await;
+                if ok {
+                    if !b.healthy.load(AOrd::Relaxed) {
+                        tracing::info!(
+                            event = "backend.recovered",
+                            tunnel_id = %tunnel_id,
+                            backend_id = %b.id,
+                            addr = %b.addr,
+                            "backend {} recovered",
+                            b.addr
+                        );
+                    }
+                    b.healthy.store(true, AOrd::Relaxed);
+                    fail_counts.remove(&b.id);
+                } else {
+                    let count = fail_counts.entry(b.id.clone()).or_insert(0);
+                    *count += 1;
+                    if *count >= 3 {
+                        if b.healthy.load(AOrd::Relaxed) {
+                            tracing::warn!(
+                                event = "backend.unhealthy",
+                                tunnel_id = %tunnel_id,
+                                backend_id = %b.id,
+                                addr = %b.addr,
+                                "backend {} marked unhealthy after 3 consecutive failures",
+                                b.addr
+                            );
+                        }
+                        b.healthy.store(false, AOrd::Relaxed);
+                    }
+                }
+            }
+        }
+    });
 }

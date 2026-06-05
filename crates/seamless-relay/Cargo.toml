@@ -37,6 +37,7 @@ rustls-pemfile = { workspace = true }
 toml = { workspace = true }
 hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "server-graceful"] }
+instant-acme = { workspace = true }
 
 [dev-dependencies]
 seamless-common = { path = "../seamless-common" }
