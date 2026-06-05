@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use rustls::ServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::CertificateDer;
 use std::sync::Arc;
 use tokio_rustls::TlsAcceptor;
 
@@ -46,7 +46,6 @@ fn acceptor_from_pem(cert_pem: &[u8], key_pem: &[u8]) -> Result<TlsAcceptor> {
         .context("parsing TLS private key PEM")?
         .ok_or_else(|| anyhow::anyhow!("no private key found in key PEM"))?;
 
-    let key = PrivateKeyDer::try_from(key).map_err(|e| anyhow::anyhow!("invalid key: {e}"))?;
 
     let config = ServerConfig::builder()
         .with_no_client_auth()

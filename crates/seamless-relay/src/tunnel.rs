@@ -16,6 +16,19 @@ use tracing::{info, warn};
 
 use crate::metrics::Metrics;
 
+// ── Relay-level context passed into per-connection handlers ───────────────────
+
+/// Immutable relay-level context that every tunnel handler needs.
+pub struct ConnCtx {
+    pub tunnels: TunnelMap,
+    pub tcp_ports: TcpPortSet,
+    pub base_domain: String,
+    pub http_port: u16,
+    pub auth: AuthPolicy,
+    pub metrics: Metrics,
+    pub client_ip: String,
+}
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// Per-tunnel state shared between the tunnel task and the admin API.
@@ -105,16 +118,8 @@ pub enum AuthError {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub async fn handle_client(
-    mux: Arc<SeamMux>,
-    tunnels: TunnelMap,
-    tcp_ports: TcpPortSet,
-    base_domain: String,
-    http_port: u16,
-    auth: AuthPolicy,
-    metrics: Metrics,
-    client_ip: String,
-) -> Result<()> {
+pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
+    let ConnCtx { tunnels, tcp_ports, base_domain, http_port, auth, metrics, client_ip } = ctx;
     let t0 = Instant::now();
 
     let mut control = mux
@@ -161,25 +166,26 @@ pub async fn handle_client(
 
     match kind {
         TunnelKind::Http { subdomain } => {
-            serve_http(mux, control, tunnels, base_domain, http_port, subdomain, metrics, client_ip).await
+            serve_http(mux, control, tunnels, &base_domain, http_port, subdomain, metrics, &client_ip).await
         }
         TunnelKind::Tcp { port } => {
-            serve_tcp(mux, control, tunnels, tcp_ports, base_domain, port, metrics, client_ip).await
+            serve_tcp(mux, control, tunnels, tcp_ports, &base_domain, port, metrics, &client_ip).await
         }
     }
 }
 
 // ── HTTP tunnel ───────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_http(
     mux: Arc<SeamMux>,
     mut control: SeamStream,
     tunnels: TunnelMap,
-    base_domain: String,
+    base_domain: &str,
     http_port: u16,
     subdomain: Option<String>,
     _metrics: Metrics,
-    client_ip: String,
+    client_ip: &str,
 ) -> Result<()> {
     let sub = subdomain.unwrap_or_else(random_subdomain);
     let url = if http_port == 80 {
@@ -198,7 +204,7 @@ async fn serve_http(
         mux: mux.clone(),
         subdomain: sub.clone(),
         connected_at: crate::store::unix_now(),
-        client_ip,
+        client_ip: client_ip.to_string(),
         bytes_in: bytes_in.clone(),
         bytes_out: bytes_out.clone(),
         paused: paused.clone(),
@@ -258,15 +264,16 @@ async fn serve_http(
 
 // ── TCP tunnel ────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_tcp(
     mux: Arc<SeamMux>,
     mut control: SeamStream,
     tunnels: TunnelMap,
     tcp_ports: TcpPortSet,
-    base_domain: String,
+    base_domain: &str,
     requested_port: u16,
     _metrics: Metrics,
-    client_ip: String,
+    client_ip: &str,
 ) -> Result<()> {
     let (listener, port) = match requested_port {
         0 => bind_random_port(&tcp_ports).await?,
@@ -292,7 +299,7 @@ async fn serve_tcp(
         mux: mux.clone(),
         subdomain: tunnel_key.clone(),
         connected_at: crate::store::unix_now(),
-        client_ip,
+        client_ip: client_ip.to_string(),
         bytes_in: bytes_in.clone(),
         bytes_out: bytes_out.clone(),
         paused: Arc::new(AtomicBool::new(false)),

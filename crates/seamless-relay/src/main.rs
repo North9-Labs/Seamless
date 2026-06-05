@@ -227,18 +227,16 @@ async fn main() -> Result<()> {
                 let mux = SeamMux::new(conn);
                 let s = state.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = tunnel::handle_client(
-                        mux,
-                        s.tunnels,
-                        s.tcp_ports,
-                        (*s.base_domain).clone(),
-                        s.http_port,
-                        s.auth,
-                        s.metrics,
+                    let ctx = tunnel::ConnCtx {
+                        tunnels: s.tunnels,
+                        tcp_ports: s.tcp_ports,
+                        base_domain: (*s.base_domain).clone(),
+                        http_port: s.http_port,
+                        auth: s.auth,
+                        metrics: s.metrics,
                         client_ip,
-                    )
-                    .await
-                    {
+                    };
+                    if let Err(e) = tunnel::handle_client(mux, ctx).await {
                         warn!("client from {remote} ended: {e:#}");
                     }
                 });
