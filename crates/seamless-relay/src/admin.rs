@@ -473,6 +473,13 @@ async fn admin_disconnect_tunnel(
         "admin forcibly disconnected tunnel '{}' from {} ({}s)",
         entry.subdomain, entry.client_ip, duration_secs
     );
+    crate::audit_event!(s.audit_log, "tunnel.admin_disconnect",
+        "subdomain" => &*entry.subdomain,
+        "client_ip" => &*entry.client_ip,
+        "duration_secs" => duration_secs,
+        "bytes_in" => entry.bytes_in.load(Ordering::Relaxed),
+        "bytes_out" => entry.bytes_out.load(Ordering::Relaxed)
+    );
     // Fire webhook non-blockingly.
     if let Some(ref url) = *s.webhook_url {
         let webhook = crate::tunnel::WebhookCtx {
@@ -632,6 +639,13 @@ async fn admin_bulk_disconnect(
             duration_secs = duration_secs,
             "admin bulk-disconnected tunnel '{}' from {} ({}s)",
             entry.subdomain, entry.client_ip, duration_secs
+        );
+        crate::audit_event!(s.audit_log, "tunnel.admin_bulk_disconnect",
+            "subdomain" => &*entry.subdomain,
+            "client_ip" => &*entry.client_ip,
+            "duration_secs" => duration_secs,
+            "bytes_in" => entry.bytes_in.load(Ordering::Relaxed),
+            "bytes_out" => entry.bytes_out.load(Ordering::Relaxed)
         );
         // Fire webhook for each evicted tunnel.
         if let Some(ref url) = *s.webhook_url {

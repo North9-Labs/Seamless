@@ -15,6 +15,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex};
 use tracing::{info, warn};
 
+use crate::audit::AuditLog;
+use crate::denylist::IpDenyList;
 use crate::metrics::Metrics;
 
 // ── Subdomain prefix enforcement ──────────────────────────────────────────────
@@ -236,6 +238,12 @@ pub struct ConnCtx {
     pub subdomain_length: usize,
     /// File-backed blocklist of subdomains (reloaded on SIGHUP).
     pub blocklist: SubdomainBlocklist,
+    /// IP CIDR deny list — checked before rate limiting.
+    pub ip_denylist: IpDenyList,
+    /// Append-only audit log handle.
+    pub audit_log: AuditLog,
+    /// Keepalive interval in seconds (0 = disabled).
+    pub tunnel_keepalive: u64,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -391,9 +399,29 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
         tunnels, tcp_ports, base_domain, http_port, https_port, auth, metrics, client_ip,
         webhook_url, http_client, max_tunnels_per_ip, rate_limiter, max_tunnels,
         reserved_subdomains, subdomain_prefix, subdomain_length, blocklist,
+        ip_denylist, audit_log, tunnel_keepalive,
     } = ctx;
     let webhook = WebhookCtx { url: webhook_url, client: http_client };
     let t0 = Instant::now();
+
+    // IP deny list check — performed before any resource-intensive processing.
+    // Parse the client IP string (best-effort; failure means allow to avoid blocking legitimate traffic).
+    if ip_denylist.is_enabled() {
+        if let Ok(ip_addr) = client_ip.parse::<std::net::IpAddr>() {
+            if ip_denylist.is_denied(ip_addr) {
+                metrics.inc_auth_failures();
+                tracing::warn!(
+                    event = "ip.denylisted",
+                    client_ip = %client_ip,
+                    "connection from denylisted IP {client_ip} rejected"
+                );
+                crate::audit_event!(audit_log, "ip.denylisted",
+                    "client_ip" => &client_ip
+                );
+                return Err(anyhow!("IP denylisted: {client_ip}"));
+            }
+        }
+    }
 
     // Wrap accept_stream + read_frame in a 30-second timeout to prevent
     // resource exhaustion from clients that connect but never register.
@@ -472,6 +500,10 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
             client_ip = %client_ip,
             reason = msg,
             "auth denied from {client_ip}: {msg}"
+        );
+        crate::audit_event!(audit_log, "auth.failure",
+            "client_ip" => &client_ip,
+            "reason" => msg
         );
         write_frame(&mut control, &ControlFrame::Error { code, message: msg.into() })
             .await
@@ -556,10 +588,10 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     match kind {
         TunnelKind::Http { subdomain } => {
-            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook, &reserved_subdomains, &subdomain_prefix, subdomain_length, &blocklist).await
+            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook, &reserved_subdomains, &subdomain_prefix, subdomain_length, &blocklist, &audit_log, tunnel_keepalive).await
         }
         TunnelKind::Tcp { port } => {
-            serve_tcp(mux, control, tunnels, tcp_ports, &base_domain, port, metrics, &client_ip, webhook).await
+            serve_tcp(mux, control, tunnels, tcp_ports, &base_domain, port, metrics, &client_ip, webhook, &audit_log, tunnel_keepalive).await
         }
     }
 }
@@ -597,6 +629,8 @@ async fn serve_http(
     prefix: &SubdomainPrefix,
     subdomain_length: usize,
     blocklist: &SubdomainBlocklist,
+    audit_log: &AuditLog,
+    tunnel_keepalive: u64,
 ) -> Result<()> {
     // Validate client-requested subdomains before falling back to random.
     if let Some(ref requested) = subdomain {
@@ -732,6 +766,12 @@ async fn serve_http(
         connected_at = connected_at,
         "http tunnel opened: {url} from {client_ip}"
     );
+    crate::audit_event!(audit_log, "tunnel.open",
+        "kind" => "http",
+        "subdomain" => &sub,
+        "url" => &url,
+        "client_ip" => client_ip
+    );
     webhook.fire(serde_json::json!({
         "event": "tunnel.connect",
         "kind": "http",
@@ -740,12 +780,15 @@ async fn serve_http(
         "client_ip": client_ip,
     }));
 
-    let mut ping_interval = tokio::time::interval(Duration::from_secs(25));
+    // Use configurable keepalive interval; fall back to 25s if disabled (keepalive=0).
+    let keepalive_secs = if tunnel_keepalive > 0 { tunnel_keepalive } else { 25 };
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(keepalive_secs));
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ping_interval.tick().await; // discard first immediate tick
 
     let mut drain = [0u8; 256];
     let mut disconnect_rx = disconnect_rx;
+    let mut keepalive_timeout = false;
     loop {
         tokio::select! {
             _ = &mut disconnect_rx => {
@@ -753,7 +796,19 @@ async fn serve_http(
                 break;
             }
             _ = ping_interval.tick() => {
-                if write_frame(&mut control, &ControlFrame::Ping).await.is_err() {
+                // Send keepalive ping; if tunnel_keepalive > 0 require a response within 10s.
+                if tunnel_keepalive > 0 {
+                    match tokio::time::timeout(
+                        Duration::from_secs(10),
+                        write_frame(&mut control, &ControlFrame::Ping),
+                    ).await {
+                        Ok(Ok(())) => {} // ping sent; client will respond or send data
+                        Ok(Err(_)) | Err(_) => {
+                            keepalive_timeout = true;
+                            break;
+                        }
+                    }
+                } else if write_frame(&mut control, &ControlFrame::Ping).await.is_err() {
                     break;
                 }
             }
@@ -768,15 +823,46 @@ async fn serve_http(
 
     tunnels.lock().await.remove(&sub);
     let duration_secs = crate::store::unix_now() - connected_at;
-    info!(
-        event = "tunnel.close",
-        kind = "http",
-        subdomain = %sub,
-        url = %url,
-        client_ip = %client_ip,
-        duration_secs = duration_secs,
-        "http tunnel closed: {sub} (duration {duration_secs}s)"
-    );
+    let bytes_in_final = bytes_in.load(std::sync::atomic::Ordering::Relaxed);
+    let bytes_out_final = bytes_out.load(std::sync::atomic::Ordering::Relaxed);
+
+    if keepalive_timeout {
+        warn!(
+            event = "tunnel.keepalive_timeout",
+            kind = "http",
+            subdomain = %sub,
+            client_ip = %client_ip,
+            duration_secs = duration_secs,
+            "http tunnel keepalive timeout: {sub} from {client_ip} (no response within 10s)"
+        );
+        crate::audit_event!(audit_log, "tunnel.keepalive_timeout",
+            "kind" => "http",
+            "subdomain" => &sub,
+            "client_ip" => client_ip,
+            "duration_secs" => duration_secs,
+            "bytes_in" => bytes_in_final,
+            "bytes_out" => bytes_out_final
+        );
+    } else {
+        info!(
+            event = "tunnel.close",
+            kind = "http",
+            subdomain = %sub,
+            url = %url,
+            client_ip = %client_ip,
+            duration_secs = duration_secs,
+            "http tunnel closed: {sub} (duration {duration_secs}s)"
+        );
+        crate::audit_event!(audit_log, "tunnel.close",
+            "kind" => "http",
+            "subdomain" => &sub,
+            "url" => &url,
+            "client_ip" => client_ip,
+            "duration_secs" => duration_secs,
+            "bytes_in" => bytes_in_final,
+            "bytes_out" => bytes_out_final
+        );
+    }
     webhook.fire(serde_json::json!({
         "event": "tunnel.disconnect",
         "kind": "http",
@@ -801,6 +887,8 @@ async fn serve_tcp(
     metrics: Metrics,
     client_ip: &str,
     webhook: WebhookCtx,
+    audit_log: &AuditLog,
+    tunnel_keepalive: u64,
 ) -> Result<()> {
     let (listener, port) = match requested_port {
         0 => bind_random_port(&tcp_ports).await?,
@@ -824,6 +912,12 @@ async fn serve_tcp(
         client_ip = %client_ip,
         connected_at = connected_at,
         "tcp tunnel opened: {url} from {client_ip}"
+    );
+    crate::audit_event!(audit_log, "tunnel.open",
+        "kind" => "tcp",
+        "port" => port,
+        "url" => &url,
+        "client_ip" => client_ip
     );
     webhook.fire(serde_json::json!({
         "event": "tunnel.connect",
@@ -859,12 +953,15 @@ async fn serve_tcp(
         run_tcp_listener(listener, mux_for_listener, shutdown_rx, bi2, bo2, met2).await;
     });
 
-    let mut ping_interval = tokio::time::interval(Duration::from_secs(25));
+    // Use configurable keepalive interval; fall back to 25s if disabled (keepalive=0).
+    let keepalive_secs = if tunnel_keepalive > 0 { tunnel_keepalive } else { 25 };
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(keepalive_secs));
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ping_interval.tick().await; // discard first immediate tick
 
     let mut drain = [0u8; 256];
     let mut disconnect_rx = disconnect_rx;
+    let mut keepalive_timeout = false;
     loop {
         tokio::select! {
             _ = &mut disconnect_rx => {
@@ -872,7 +969,18 @@ async fn serve_tcp(
                 break;
             }
             _ = ping_interval.tick() => {
-                if write_frame(&mut control, &ControlFrame::Ping).await.is_err() {
+                if tunnel_keepalive > 0 {
+                    match tokio::time::timeout(
+                        Duration::from_secs(10),
+                        write_frame(&mut control, &ControlFrame::Ping),
+                    ).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) | Err(_) => {
+                            keepalive_timeout = true;
+                            break;
+                        }
+                    }
+                } else if write_frame(&mut control, &ControlFrame::Ping).await.is_err() {
                     break;
                 }
             }
@@ -890,15 +998,46 @@ async fn serve_tcp(
     tcp_ports.lock().await.remove(&port);
     tunnels.lock().await.remove(&tunnel_key);
     let duration_secs = crate::store::unix_now() - connected_at;
-    info!(
-        event = "tunnel.close",
-        kind = "tcp",
-        port = port,
-        url = %url,
-        client_ip = %client_ip,
-        duration_secs = duration_secs,
-        "tcp tunnel closed: port {port} (duration {duration_secs}s)"
-    );
+    let bytes_in_final = bytes_in.load(std::sync::atomic::Ordering::Relaxed);
+    let bytes_out_final = bytes_out.load(std::sync::atomic::Ordering::Relaxed);
+
+    if keepalive_timeout {
+        warn!(
+            event = "tunnel.keepalive_timeout",
+            kind = "tcp",
+            port = port,
+            client_ip = %client_ip,
+            duration_secs = duration_secs,
+            "tcp tunnel keepalive timeout: port {port} from {client_ip} (no response within 10s)"
+        );
+        crate::audit_event!(audit_log, "tunnel.keepalive_timeout",
+            "kind" => "tcp",
+            "port" => port,
+            "client_ip" => client_ip,
+            "duration_secs" => duration_secs,
+            "bytes_in" => bytes_in_final,
+            "bytes_out" => bytes_out_final
+        );
+    } else {
+        info!(
+            event = "tunnel.close",
+            kind = "tcp",
+            port = port,
+            url = %url,
+            client_ip = %client_ip,
+            duration_secs = duration_secs,
+            "tcp tunnel closed: port {port} (duration {duration_secs}s)"
+        );
+        crate::audit_event!(audit_log, "tunnel.close",
+            "kind" => "tcp",
+            "port" => port,
+            "url" => &url,
+            "client_ip" => client_ip,
+            "duration_secs" => duration_secs,
+            "bytes_in" => bytes_in_final,
+            "bytes_out" => bytes_out_final
+        );
+    }
     webhook.fire(serde_json::json!({
         "event": "tunnel.disconnect",
         "kind": "tcp",

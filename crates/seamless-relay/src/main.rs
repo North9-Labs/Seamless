@@ -14,7 +14,9 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 mod admin;
+mod audit;
 mod cloudflare;
+mod denylist;
 mod ingress;
 mod logs;
 mod metrics;
@@ -22,6 +24,8 @@ mod store;
 mod tls;
 mod tunnel;
 
+use audit::AuditLog;
+use denylist::IpDenyList;
 use logs::LogBuffer;
 use metrics::Metrics;
 use store::SharedStore;
@@ -115,6 +119,16 @@ pub struct AppState {
     pub max_body_bytes: u64,
     /// File-backed blocklist of subdomains (reloaded on SIGHUP).
     pub blocklist: SubdomainBlocklist,
+    /// IP CIDR deny list — blocks tunnel registrations from known-bad ranges.
+    /// Checked before rate limiting. Reloaded on SIGHUP.
+    pub ip_denylist: IpDenyList,
+    /// Append-only JSONL audit log file handle (None = disabled).
+    pub audit_log: AuditLog,
+    /// Keepalive interval in seconds for tunnel control streams.
+    /// 0 = disabled (uses the existing 25s ping). When set, the relay sends a
+    /// keepalive frame if no data has flowed in the interval and disconnects
+    /// if the client does not respond within 10 s.
+    pub tunnel_keepalive: u64,
 }
 
 pub struct RelayPubkeys {
@@ -160,6 +174,9 @@ struct FileConfig {
     tunnel_max_age: Option<u64>,
     max_body_size: Option<u64>,
     blocklist_file: Option<PathBuf>,
+    ip_denylist_file: Option<PathBuf>,
+    audit_log: Option<PathBuf>,
+    tunnel_keepalive: Option<u64>,
 }
 
 /// Find and load the TOML config file, returning the loaded config and the
@@ -360,6 +377,33 @@ struct Args {
     /// Complements --reserved-subdomains (which is CLI-sized).
     #[arg(long, env = "SEAMLESS_BLOCKLIST_FILE")]
     blocklist_file: Option<PathBuf>,
+
+    /// Path to a newline-separated file of CIDR ranges blocked from opening tunnels.
+    /// Lines beginning with '#' and blank lines are ignored (e.g. "10.0.0.0/8").
+    /// Checked before rate limiting — matching IPs receive an immediate 403.
+    /// Reloaded automatically on SIGHUP — no restart needed.
+    /// Useful for blocking known bad ASNs, Tor exit nodes, or hostile ranges
+    /// in government and classified deployments.
+    #[arg(long, env = "SEAMLESS_IP_DENYLIST_FILE")]
+    ip_denylist_file: Option<PathBuf>,
+
+    /// Path for the append-only JSONL audit log file.
+    /// Every structured audit event (tunnel open/close, auth failures, admin
+    /// actions, IP denylist hits, etc.) is appended as one JSON line.
+    /// Rotated at midnight UTC: the current file is renamed to
+    /// <path>.YYYY-MM-DD and a fresh file is opened.
+    /// Required for government compliance (persistent, immutable audit trail).
+    #[arg(long, env = "SEAMLESS_AUDIT_LOG")]
+    audit_log: Option<PathBuf>,
+
+    /// Tunnel keepalive interval in seconds (0 = disabled, default 30).
+    /// The relay sends a keepalive frame on the tunnel control stream if no
+    /// data has flowed within this interval.  If the client does not respond
+    /// within 10 seconds the tunnel is torn down and a `tunnel.keepalive_timeout`
+    /// audit event is emitted.  Useful for detecting dead NAT-traversed clients
+    /// faster than TCP keepalive allows.
+    #[arg(long, default_value_t = 30, env = "SEAMLESS_TUNNEL_KEEPALIVE")]
+    tunnel_keepalive: u64,
 }
 
 /// Merge file-config values into `args` for any field that still holds its
@@ -464,6 +508,15 @@ fn apply_file_config(args: &mut Args, cfg: &FileConfig) {
     }
     if args.blocklist_file.is_none() {
         if let Some(ref v) = cfg.blocklist_file { args.blocklist_file = Some(v.clone()); }
+    }
+    if args.ip_denylist_file.is_none() {
+        if let Some(ref v) = cfg.ip_denylist_file { args.ip_denylist_file = Some(v.clone()); }
+    }
+    if args.audit_log.is_none() {
+        if let Some(ref v) = cfg.audit_log { args.audit_log = Some(v.clone()); }
+    }
+    if args.tunnel_keepalive == 30 {
+        if let Some(v) = cfg.tunnel_keepalive { args.tunnel_keepalive = v; }
     }
 }
 
@@ -618,6 +671,37 @@ async fn main() -> Result<()> {
         None => SubdomainBlocklist::disabled(),
     };
 
+    // Load IP CIDR deny list if configured.
+    let ip_denylist = match &args.ip_denylist_file {
+        Some(path) => {
+            info!("ip-denylist: loading from {}", path.display());
+            IpDenyList::from_file(path)
+        }
+        None => IpDenyList::disabled(),
+    };
+
+    // Start audit log writer if configured.
+    let audit_log = match &args.audit_log {
+        Some(path) => {
+            info!("audit-log: writing to {}", path.display());
+            AuditLog::start(path.clone())
+        }
+        None => {
+            info!("audit-log: not configured (use --audit-log <path> for compliance logging)");
+            AuditLog::disabled()
+        }
+    };
+
+    // Log tunnel keepalive setting.
+    if args.tunnel_keepalive > 0 {
+        info!(
+            "tunnel keepalive: {}s interval, 10s response deadline",
+            args.tunnel_keepalive
+        );
+    } else {
+        info!("tunnel keepalive: disabled");
+    }
+
     let state = AppState {
         store,
         store_path,
@@ -652,6 +736,9 @@ async fn main() -> Result<()> {
         stats_history: stats_history.clone(),
         max_body_bytes: args.max_body_size,
         blocklist: blocklist.clone(),
+        ip_denylist: ip_denylist.clone(),
+        audit_log: audit_log.clone(),
+        tunnel_keepalive: args.tunnel_keepalive,
     };
 
     // Warn if admin port is publicly bound without an IP allowlist.
@@ -768,12 +855,13 @@ async fn main() -> Result<()> {
         });
     }
 
-    // SIGHUP → hot-reload the auth token file and blocklist (Unix only).
+    // SIGHUP → hot-reload the auth token file, subdomain blocklist, and IP deny list (Unix only).
     #[cfg(unix)]
     {
         let auth = state.auth.clone();
         let auth_file = state.auth_file.clone();
         let blocklist_for_sighup = blocklist.clone();
+        let denylist_for_sighup = ip_denylist.clone();
         tokio::spawn(async move {
             use tokio::signal::unix::{SignalKind, signal};
             let mut sighup = signal(SignalKind::hangup()).expect("SIGHUP handler");
@@ -789,6 +877,9 @@ async fn main() -> Result<()> {
                 }
                 if blocklist_for_sighup.is_enabled() {
                     blocklist_for_sighup.reload();
+                }
+                if denylist_for_sighup.is_enabled() {
+                    denylist_for_sighup.reload();
                 }
             }
         });
@@ -921,6 +1012,9 @@ async fn main() -> Result<()> {
                         subdomain_prefix: s.subdomain_prefix,
                         subdomain_length: s.subdomain_length,
                         blocklist: s.blocklist,
+                        ip_denylist: s.ip_denylist,
+                        audit_log: s.audit_log,
+                        tunnel_keepalive: s.tunnel_keepalive,
                     };
                     if let Err(e) = tunnel::handle_client(mux, ctx).await {
                         warn!("client from {remote} ended: {e:#}");
