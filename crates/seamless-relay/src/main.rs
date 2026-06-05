@@ -47,6 +47,8 @@ pub struct AppState {
     pub admin_token: Arc<Option<String>>,
     /// The cipher suite this relay was started with.
     pub cipher: Arc<String>,
+    /// Path to the auth token file, if any. Stored so SIGHUP can reload it.
+    pub auth_file: Arc<Option<PathBuf>>,
 }
 
 pub struct RelayPubkeys {
@@ -182,6 +184,7 @@ async fn main() -> Result<()> {
         start_time: Arc::new(Instant::now()),
         admin_token: Arc::new(args.admin_token),
         cipher: Arc::new(args.cipher.clone()),
+        auth_file: Arc::new(args.auth_file.clone()),
     };
 
     // Start admin UI server.
@@ -218,6 +221,28 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = ingress::run_https_ingress(https_addr, acceptor, https_state).await {
                 tracing::error!("https ingress died: {e:#}");
+            }
+        });
+    }
+
+    // SIGHUP → hot-reload the auth token file (Unix only).
+    #[cfg(unix)]
+    {
+        let auth = state.auth.clone();
+        let auth_file = state.auth_file.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut sighup = signal(SignalKind::hangup()).expect("SIGHUP handler");
+            loop {
+                sighup.recv().await;
+                if let Some(path) = auth_file.as_ref() {
+                    match auth.reload_from_file(path) {
+                        Ok(()) => info!("SIGHUP: auth file reloaded from {}", path.display()),
+                        Err(e) => warn!("SIGHUP: auth reload failed: {e:#}"),
+                    }
+                } else {
+                    info!("SIGHUP: no auth file configured, nothing to reload");
+                }
             }
         });
     }

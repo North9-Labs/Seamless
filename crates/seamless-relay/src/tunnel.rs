@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::{Duration, Instant};
 
@@ -54,9 +55,16 @@ pub type TcpPortSet = Arc<Mutex<HashSet<u16>>>;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
+/// Shared, hot-reloadable auth token set.
+///
+/// All clones of `AuthPolicy` share the same inner `RwLock<HashSet>`.
+/// Calling `reload_from_file` atomically swaps the set so that every
+/// in-flight and future connection sees the updated token list without
+/// a process restart.  SIGHUP triggers the reload in `main`.
 #[derive(Clone)]
 pub struct AuthPolicy {
-    allowed: Option<Arc<HashSet<String>>>,
+    /// `None` = open relay (no token required).
+    allowed: Option<Arc<RwLock<HashSet<String>>>>,
 }
 
 impl AuthPolicy {
@@ -64,32 +72,33 @@ impl AuthPolicy {
         Self { allowed: None }
     }
 
-    pub fn from_file(path: &std::path::Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading auth file {}", path.display()))?;
-        let mut set = HashSet::new();
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            set.insert(line.to_string());
-        }
-        if set.is_empty() {
-            bail!("auth file {} had no tokens", path.display());
-        }
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let set = load_token_set(path)?;
         Ok(Self {
-            allowed: Some(Arc::new(set)),
+            allowed: Some(Arc::new(RwLock::new(set))),
         })
     }
 
+    /// Re-read `path` and atomically replace the token set.
+    /// Returns an error if the file is missing or empty — in that case the
+    /// existing set remains unchanged so the relay stays protected.
+    pub fn reload_from_file(&self, path: &Path) -> Result<()> {
+        let Some(lock) = &self.allowed else {
+            bail!("reload called on open auth policy — no file to reload");
+        };
+        let new_set = load_token_set(path)?;
+        *lock.write().expect("auth RwLock poisoned") = new_set;
+        Ok(())
+    }
+
     pub fn check(&self, token: Option<&str>) -> std::result::Result<(), AuthError> {
-        let Some(allowed) = &self.allowed else {
+        let Some(lock) = &self.allowed else {
             return Ok(());
         };
         let Some(t) = token else {
             return Err(AuthError::Required);
         };
+        let allowed = lock.read().expect("auth RwLock poisoned");
         let tbytes = t.as_bytes();
         let tlen = tbytes.len();
         let mut hit = 0u8;
@@ -103,12 +112,25 @@ impl AuthPolicy {
             let eq: u8 = cbytes[..cmp_len].ct_eq(&tbytes[..cmp_len]).unwrap_u8();
             hit |= eq & len_match;
         }
-        if hit == 1 {
-            Ok(())
-        } else {
-            Err(AuthError::Invalid)
-        }
+        if hit == 1 { Ok(()) } else { Err(AuthError::Invalid) }
     }
+}
+
+fn load_token_set(path: &Path) -> Result<HashSet<String>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading auth file {}", path.display()))?;
+    let mut set = HashSet::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        set.insert(line.to_string());
+    }
+    if set.is_empty() {
+        bail!("auth file {} had no tokens", path.display());
+    }
+    Ok(set)
 }
 
 pub enum AuthError {
