@@ -36,6 +36,8 @@ pub struct AppState {
     pub relay_pubkeys: Arc<RelayPubkeys>,
     pub seam_addr: String,
     pub http_port: u16,
+    /// Set when the relay is running with TLS — used to build https:// tunnel URLs.
+    pub https_port: Option<u16>,
     pub auth: AuthPolicy,
     pub http_client: reqwest::Client,
     pub log_buffer: LogBuffer,
@@ -43,6 +45,8 @@ pub struct AppState {
     pub start_time: Arc<Instant>,
     /// Optional Bearer token protecting admin-only endpoints.
     pub admin_token: Arc<Option<String>>,
+    /// The cipher suite this relay was started with.
+    pub cipher: Arc<String>,
 }
 
 pub struct RelayPubkeys {
@@ -170,12 +174,14 @@ async fn main() -> Result<()> {
         }),
         seam_addr: args.seam_addr.to_string(),
         http_port: args.http_addr.port(),
+        https_port: args.https_addr.map(|a| a.port()),
         auth,
         http_client: reqwest::Client::new(),
         log_buffer: logs::new_buffer(),
         metrics: metrics::new_metrics(),
         start_time: Arc::new(Instant::now()),
         admin_token: Arc::new(args.admin_token),
+        cipher: Arc::new(args.cipher.clone()),
     };
 
     // Start admin UI server.

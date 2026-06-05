@@ -207,15 +207,29 @@ async fn delete_route(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
 
 async fn list_seamless_tunnels(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let t = s.tunnels.lock().await;
+    let now = unix_now();
     let (http, tcp): (Vec<_>, Vec<_>) = t.values().partition(|e| !e.subdomain.starts_with("tcp:"));
     let http: Vec<_> = http
         .iter()
         .map(|entry| {
+            // Show https:// URL when the relay has TLS configured.
+            let url = if let Some(port) = s.https_port {
+                if port == 443 {
+                    format!("https://{}.{}", entry.subdomain, s.base_domain)
+                } else {
+                    format!("https://{}.{}:{}", entry.subdomain, s.base_domain, port)
+                }
+            } else if s.http_port == 80 {
+                format!("http://{}.{}", entry.subdomain, s.base_domain)
+            } else {
+                format!("http://{}.{}:{}", entry.subdomain, s.base_domain, s.http_port)
+            };
             serde_json::json!({
                 "subdomain": entry.subdomain,
-                "url": format!("http://{}.{}:{}", entry.subdomain, s.base_domain, s.http_port),
+                "url": url,
                 "paused": entry.paused.load(Ordering::Relaxed),
                 "connected_at": entry.connected_at,
+                "duration_secs": now - entry.connected_at,
                 "client_ip": entry.client_ip,
                 "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
                 "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
@@ -229,6 +243,7 @@ async fn list_seamless_tunnels(State(s): State<Arc<AppState>>) -> Json<serde_jso
                 "key": entry.subdomain,
                 "url": format!("tcp://{}:{}", s.base_domain, entry.subdomain.trim_start_matches("tcp:")),
                 "connected_at": entry.connected_at,
+                "duration_secs": now - entry.connected_at,
                 "client_ip": entry.client_ip,
                 "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
                 "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
@@ -423,6 +438,8 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "x25519_pubkey": s.relay_pubkeys.x25519,
         "kem_pubkey": s.relay_pubkeys.kem,
         "base_domain": s.base_domain.as_ref(),
+        "cipher": s.cipher.as_ref(),
+        "https": s.https_port.is_some(),
     }))
 }
 
