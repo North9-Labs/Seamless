@@ -22,7 +22,13 @@ pub fn load() -> ClientConfig {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return ClientConfig::default();
     };
-    toml::from_str(&text).unwrap_or_default()
+    match toml::from_str(&text) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("warning: config file malformed, ignoring ({e})\n  path: {}", path.display());
+            ClientConfig::default()
+        }
+    }
 }
 
 pub fn save(cfg: &ClientConfig) -> Result<()> {

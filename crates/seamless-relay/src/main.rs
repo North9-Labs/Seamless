@@ -93,6 +93,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install ring as the default rustls crypto provider before any TLS code runs.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let args = Args::parse();
 
     tracing_subscriber::fmt()

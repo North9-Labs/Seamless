@@ -10,10 +10,8 @@ use std::time::Duration;
 
 use seamless_common::{read_frame, write_frame, ControlFrame, TunnelKind, PROTOCOL_VERSION};
 use seam_protocol::api::{Client, Server};
-use seam_protocol::handshake::IdentityKeypair;
+use seam_protocol::handshake::{IdentityKeypair, pk_from_bytes, pk_to_bytes};
 use seam_protocol::tunnel::{SeamMux, SeamStream};
-use pqcrypto_kyber::kyber768;
-use pqcrypto_traits::kem::PublicKey as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -30,7 +28,7 @@ async fn run_test() {
     // ── relay identity + server ──────────────────────────────────────────
     let relay_id = IdentityKeypair::generate();
     let relay_x25519: [u8; 32] = *relay_id.x25519_public.as_bytes();
-    let relay_kem_bytes: Vec<u8> = relay_id.kem_pk.as_bytes().to_vec();
+    let relay_kem_bytes: Vec<u8> = pk_to_bytes(&relay_id.kem_pk);
 
     let mut server = Server::bind("127.0.0.1:0".parse().unwrap(), relay_id)
         .await
@@ -87,7 +85,7 @@ async fn run_test() {
     let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
         .await
         .expect("client bind");
-    let kem_pk = kyber768::PublicKey::from_bytes(&relay_kem_bytes).expect("kem pk decode");
+    let kem_pk = pk_from_bytes(&relay_kem_bytes).expect("kem pk decode");
 
     let conn = client
         .connect(apex_addr, &relay_x25519, &kem_pk)
