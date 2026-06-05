@@ -98,6 +98,9 @@ struct FileConfig {
     rate_limit: Option<u32>,
     max_tunnels: Option<u32>,
     admin_allow_cidr: Option<String>,
+    admin_tls_cert: Option<String>,
+    admin_tls_key: Option<String>,
+    admin_client_ca: Option<String>,
 }
 
 /// Find and load the TOML config file, returning the loaded config and the
@@ -243,6 +246,21 @@ struct Args {
     /// If not set, all IPs are allowed. Can be repeated.
     #[arg(long, env = "SEAMLESS_ADMIN_ALLOW_CIDR")]
     admin_allow_cidr: Option<String>,
+
+    /// Path to TLS certificate PEM for the admin port.
+    /// When set with --admin-tls-key, the admin API is served over TLS 1.3.
+    #[arg(long, env = "SEAMLESS_ADMIN_TLS_CERT")]
+    admin_tls_cert: Option<String>,
+
+    /// Path to TLS private key PEM for the admin port.
+    #[arg(long, env = "SEAMLESS_ADMIN_TLS_KEY")]
+    admin_tls_key: Option<String>,
+
+    /// Path to a CA certificate PEM used to verify admin client certificates (mutual TLS).
+    /// Requires --admin-tls-cert and --admin-tls-key. Only clients presenting a certificate
+    /// signed by this CA will be allowed to connect — recommended for government deployments.
+    #[arg(long, env = "SEAMLESS_ADMIN_CLIENT_CA")]
+    admin_client_ca: Option<String>,
 }
 
 /// Merge file-config values into `args` for any field that still holds its
@@ -320,6 +338,15 @@ fn apply_file_config(args: &mut Args, cfg: &FileConfig) {
     }
     if args.admin_allow_cidr.is_none() {
         if let Some(ref v) = cfg.admin_allow_cidr { args.admin_allow_cidr = Some(v.clone()); }
+    }
+    if args.admin_tls_cert.is_none() {
+        if let Some(ref v) = cfg.admin_tls_cert { args.admin_tls_cert = Some(v.clone()); }
+    }
+    if args.admin_tls_key.is_none() {
+        if let Some(ref v) = cfg.admin_tls_key { args.admin_tls_key = Some(v.clone()); }
+    }
+    if args.admin_client_ca.is_none() {
+        if let Some(ref v) = cfg.admin_client_ca { args.admin_client_ca = Some(v.clone()); }
     }
 }
 
@@ -454,10 +481,34 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Build optional admin TLS/mTLS configuration.
+    let admin_tls = match (&args.admin_tls_cert, &args.admin_tls_key) {
+        (Some(cert), Some(key)) => {
+            let mtls = args.admin_client_ca.is_some();
+            let acceptor = tls::admin_tls_acceptor(
+                cert,
+                key,
+                args.admin_client_ca.as_deref(),
+            )?;
+            if mtls {
+                info!("admin mTLS: enabled — client certificates required (CA: {})", args.admin_client_ca.as_deref().unwrap_or("?"));
+            } else {
+                info!("admin TLS: enabled — serving admin port over TLS 1.3");
+            }
+            Some(admin::AdminTlsConfig { acceptor, mtls })
+        }
+        (None, None) => None,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "--admin-tls-cert and --admin-tls-key must both be set (or neither)"
+            ));
+        }
+    };
+
     // Start admin UI server.
     let admin_state = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = admin::start_admin(args.admin_addr, admin_state).await {
+        if let Err(e) = admin::start_admin(args.admin_addr, admin_state, admin_tls).await {
             tracing::error!("admin server died: {e:#}");
         }
     });

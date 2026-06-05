@@ -195,15 +195,32 @@ pub struct WebhookCtx {
 
 impl WebhookCtx {
     /// POST `body` to the configured webhook URL in a background task.
+    /// Uses a 5-second timeout and retries once on transient failure.
     /// Failures are logged but never propagate to the caller.
     pub fn fire(&self, body: serde_json::Value) {
         let Some(url) = self.url.clone() else { return };
         let client = self.client.clone();
         tokio::spawn(async move {
-            if let Err(e) = client.post(url.as_str()).json(&body).send().await {
-                warn!("webhook delivery failed: {e:#}");
+            if let Err(e) = Self::deliver(&client, &url, &body).await {
+                warn!("webhook delivery failed (attempt 1/2): {e:#}");
+                // Retry once after a short delay.
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if let Err(e2) = Self::deliver(&client, &url, &body).await {
+                    warn!("webhook delivery failed (attempt 2/2): {e2:#}");
+                }
             }
         });
+    }
+
+    async fn deliver(client: &reqwest::Client, url: &str, body: &serde_json::Value) -> Result<(), anyhow::Error> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.post(url).json(body).send(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("webhook POST timed out after 5s"))?
+        .map_err(|e| anyhow::anyhow!("webhook POST error: {e}"))?;
+        Ok(())
     }
 }
 

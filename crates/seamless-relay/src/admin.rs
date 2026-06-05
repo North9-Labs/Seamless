@@ -25,7 +25,18 @@ const UI_HTML: &str = include_str!("admin.html");
 
 // ── Server startup ─────────────────────────────────────────────────────────
 
-pub async fn start_admin(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
+/// Configuration for optional TLS/mTLS on the admin port.
+pub struct AdminTlsConfig {
+    pub acceptor: tokio_rustls::TlsAcceptor,
+    /// True when mutual TLS is enabled (client cert required).
+    pub mtls: bool,
+}
+
+pub async fn start_admin(
+    addr: SocketAddr,
+    state: AppState,
+    tls: Option<AdminTlsConfig>,
+) -> anyhow::Result<()> {
     let shared = Arc::new(state);
     let app = Router::new()
         .route("/", get(serve_ui))
@@ -67,9 +78,68 @@ pub async fn start_admin(addr: SocketAddr, state: AppState) -> anyhow::Result<()
         .with_state(shared);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("admin ui listening on http://{addr}");
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+
+    if let Some(tls_cfg) = tls {
+        let scheme = if tls_cfg.mtls { "https (mTLS)" } else { "https (TLS)" };
+        info!("admin ui listening on {scheme} https://{addr}");
+        if tls_cfg.mtls {
+            info!("admin mTLS: client certificates required — only CA-signed clients admitted");
+        }
+        let acceptor = tls_cfg.acceptor;
+        // Serve connections one at a time via the TLS acceptor.
+        let make_svc = app.into_make_service_with_connect_info::<SocketAddr>();
+        serve_tls(listener, acceptor, make_svc).await?;
+    } else {
+        info!("admin ui listening on http://{addr}");
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    }
     Ok(())
+}
+
+/// Accept TLS connections and hand them to axum.
+async fn serve_tls(
+    listener: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+    mut make_svc: axum::extract::connect_info::IntoMakeServiceWithConnectInfo<Router, SocketAddr>,
+) -> anyhow::Result<()> {
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use hyper_util::server::conn::auto::Builder as AutoBuilder;
+    use tower::Service;
+
+    loop {
+        let (stream, peer_addr) = match listener.accept().await {
+            Ok(v) => v,
+            Err(e) => { tracing::warn!("admin TLS accept: {e}"); continue; }
+        };
+        let acceptor = acceptor.clone();
+        let svc = match make_svc.call(peer_addr).await {
+            Ok(s) => s,
+            Err(e) => { tracing::warn!("admin make_svc: {e:?}"); continue; }
+        };
+        tokio::spawn(async move {
+            let tls_stream = match acceptor.accept(stream).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::debug!("admin TLS handshake from {peer_addr}: {e}");
+                    return;
+                }
+            };
+            let io = TokioIo::new(tls_stream);
+            let builder = AutoBuilder::new(TokioExecutor::new());
+            if let Err(e) = builder
+                .serve_connection(
+                    io,
+                    hyper::service::service_fn(move |req| {
+                        let mut svc = svc.clone();
+                        async move { svc.call(req).await }
+                    }),
+                )
+                .await
+            {
+                tracing::debug!("admin TLS connection from {peer_addr} closed: {e}");
+            }
+        });
+    }
 }
 
 // ── IP allowlist middleware ───────────────────────────────────────────────────
@@ -323,6 +393,32 @@ async fn admin_disconnect_tunnel(
     let Some(entry) = entry else {
         return not_found().into_response();
     };
+
+    // Emit audit log event and webhook before disconnecting.
+    let now = unix_now();
+    let duration_secs = now - entry.connected_at;
+    tracing::info!(
+        event = "tunnel.admin_disconnect",
+        subdomain = %entry.subdomain,
+        client_ip = %entry.client_ip,
+        duration_secs = duration_secs,
+        "admin forcibly disconnected tunnel '{}' from {} ({}s)",
+        entry.subdomain, entry.client_ip, duration_secs
+    );
+    // Fire webhook non-blockingly.
+    if let Some(ref url) = *s.webhook_url {
+        let webhook = crate::tunnel::WebhookCtx {
+            url: Some(std::sync::Arc::new(url.clone())),
+            client: s.http_client.clone(),
+        };
+        webhook.fire(serde_json::json!({
+            "event": "tunnel.admin_disconnect",
+            "subdomain": entry.subdomain,
+            "client_ip": entry.client_ip,
+            "duration_secs": duration_secs,
+        }));
+    }
+
     // Send disconnect signal; the tunnel task cleans itself up.
     let mut tx_guard = entry.disconnect_tx.lock().await;
     if let Some(tx) = tx_guard.take() {
