@@ -433,6 +433,7 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 // ── Status ────────────────────────────────────────────────────────────────────
 
 async fn get_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let auth_file = s.auth_file.as_ref().as_ref().map(|p| p.display().to_string());
     Json(serde_json::json!({
         "seam_addr": s.seam_addr,
         "x25519_pubkey": s.relay_pubkeys.x25519,
@@ -440,6 +441,8 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "base_domain": s.base_domain.as_ref(),
         "cipher": s.cipher.as_ref(),
         "https": s.https_port.is_some(),
+        "auth_enabled": auth_file.is_some(),
+        "auth_file": auth_file,
     }))
 }
 

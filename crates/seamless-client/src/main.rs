@@ -52,6 +52,10 @@ struct Args {
     #[arg(long, default_value = "info")]
     log_level: String,
 
+    /// Suppress the "tunnel ready" banner (useful in scripts and systemd units).
+    #[arg(long)]
+    quiet: bool,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -218,6 +222,7 @@ async fn main() -> Result<()> {
                 kind.clone(),
                 local_target.clone(),
                 session_identity,
+                args.quiet,
             ) => {
                 match r {
                     Ok(()) => {
@@ -313,6 +318,7 @@ async fn run_session(
     kind: TunnelKind,
     local_target: String,
     identity: IdentityKeypair,
+    quiet: bool,
 ) -> Result<()> {
     let mut client = Client::bind("0.0.0.0:0".parse().expect("valid socket addr"), identity)
         .await
@@ -344,11 +350,14 @@ async fn run_session(
         .context("awaiting register reply")?
     {
         ControlFrame::Registered { public_url } => {
-            println!();
-            println!("  seamless tunnel ready");
-            println!("    public:  {public_url}");
-            println!("    local:   {local_target}");
-            println!();
+            if !quiet {
+                println!();
+                println!("  seamless tunnel ready");
+                println!("    public:  {public_url}");
+                println!("    local:   {local_target}");
+                println!();
+            }
+            info!(public_url = %public_url, local = %local_target, "tunnel ready");
         }
         ControlFrame::Error { code, message } => {
             // Relay-level rejections are permanent — no retry makes them go away.
