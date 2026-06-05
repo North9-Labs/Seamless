@@ -74,6 +74,8 @@ pub struct ConnCtx {
     /// 0 = unlimited.
     pub max_tunnels_per_ip: u32,
     pub rate_limiter: RateLimiter,
+    /// Global maximum simultaneous tunnels across all IPs (0 = unlimited).
+    pub max_tunnels: u32,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -210,7 +212,7 @@ impl WebhookCtx {
 pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
     let ConnCtx {
         tunnels, tcp_ports, base_domain, http_port, https_port, auth, metrics, client_ip,
-        webhook_url, http_client, max_tunnels_per_ip, rate_limiter,
+        webhook_url, http_client, max_tunnels_per_ip, rate_limiter, max_tunnels,
     } = ctx;
     let webhook = WebhookCtx { url: webhook_url, client: http_client };
     let t0 = Instant::now();
@@ -257,6 +259,13 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
             AuthError::Required => (401, "auth required"),
             AuthError::Invalid => (403, "invalid token"),
         };
+        metrics.inc_auth_failures();
+        tracing::warn!(
+            event = "auth.failure",
+            client_ip = %client_ip,
+            reason = msg,
+            "auth denied from {client_ip}: {msg}"
+        );
         write_frame(&mut control, &ControlFrame::Error { code, message: msg.into() })
             .await
             .ok();
@@ -268,6 +277,12 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     // Enforce per-IP connection rate limit.
     if !rate_limiter.check_and_record(&client_ip).await {
+        metrics.inc_rate_limit_hits();
+        tracing::warn!(
+            event = "rate_limit.hit",
+            client_ip = %client_ip,
+            "rate limited connection from {client_ip}"
+        );
         write_frame(&mut control, &ControlFrame::Error {
             code: 429,
             message: "too many connections from your IP — try again later".into(),
@@ -284,6 +299,13 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
             .filter(|e| e.client_ip == client_ip)
             .count() as u32;
         if count >= max_tunnels_per_ip {
+            tracing::warn!(
+                event = "tunnel.limit_per_ip",
+                client_ip = %client_ip,
+                limit = max_tunnels_per_ip,
+                current = count,
+                "per-IP tunnel limit reached for {client_ip}"
+            );
             write_frame(
                 &mut control,
                 &ControlFrame::Error {
@@ -296,6 +318,31 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
             .await
             .ok();
             return Err(anyhow!("tunnel limit exceeded for {client_ip}"));
+        }
+    }
+
+    // Enforce global tunnel cap.
+    if max_tunnels > 0 {
+        let total = tunnels.lock().await.len() as u32;
+        if total >= max_tunnels {
+            metrics.inc_tunnel_cap_rejections();
+            tracing::warn!(
+                event = "tunnel.cap_reached",
+                client_ip = %client_ip,
+                limit = max_tunnels,
+                current = total,
+                "global tunnel cap reached ({max_tunnels}), rejecting {client_ip}"
+            );
+            write_frame(
+                &mut control,
+                &ControlFrame::Error {
+                    code: 503,
+                    message: format!("relay at capacity ({max_tunnels} tunnels) — try again later"),
+                },
+            )
+            .await
+            .ok();
+            return Err(anyhow!("global tunnel cap reached for {client_ip}"));
         }
     }
 
@@ -335,13 +382,21 @@ async fn serve_http(
     http_port: u16,
     https_port: Option<u16>,
     subdomain: Option<String>,
-    _metrics: Metrics,
+    metrics: Metrics,
     client_ip: &str,
     webhook: WebhookCtx,
 ) -> Result<()> {
     // Validate client-requested subdomains before falling back to random.
     if let Some(ref requested) = subdomain {
         if let Err(e) = validate_subdomain(requested) {
+            metrics.inc_subdomain_invalid();
+            tracing::warn!(
+                event = "subdomain.invalid",
+                client_ip = %client_ip,
+                subdomain = %requested,
+                reason = %e,
+                "invalid subdomain '{requested}' from {client_ip}: {e}"
+            );
             write_frame(&mut control, &ControlFrame::Error { code: 400, message: e.to_string() }).await.ok();
             return Err(anyhow!("invalid subdomain '{requested}': {e}"));
         }
@@ -394,7 +449,16 @@ async fn serve_http(
     }
 
     write_frame(&mut control, &ControlFrame::Registered { public_url: url.clone() }).await?;
-    info!("registered http tunnel: {url}");
+    let connected_at = crate::store::unix_now();
+    info!(
+        event = "tunnel.open",
+        kind = "http",
+        subdomain = %sub,
+        url = %url,
+        client_ip = %client_ip,
+        connected_at = connected_at,
+        "http tunnel opened: {url} from {client_ip}"
+    );
     webhook.fire(serde_json::json!({
         "event": "tunnel.connect",
         "kind": "http",
@@ -430,13 +494,23 @@ async fn serve_http(
     }
 
     tunnels.lock().await.remove(&sub);
-    info!("deregistered http tunnel for subdomain {sub}");
+    let duration_secs = crate::store::unix_now() - connected_at;
+    info!(
+        event = "tunnel.close",
+        kind = "http",
+        subdomain = %sub,
+        url = %url,
+        client_ip = %client_ip,
+        duration_secs = duration_secs,
+        "http tunnel closed: {sub} (duration {duration_secs}s)"
+    );
     webhook.fire(serde_json::json!({
         "event": "tunnel.disconnect",
         "kind": "http",
         "subdomain": sub,
         "url": url,
         "client_ip": client_ip,
+        "duration_secs": duration_secs,
     }));
     Ok(())
 }
@@ -468,7 +542,16 @@ async fn serve_tcp(
 
     let url = format!("tcp://{base_domain}:{port}");
     write_frame(&mut control, &ControlFrame::Registered { public_url: url.clone() }).await?;
-    info!("registered tcp tunnel: {url}");
+    let connected_at = crate::store::unix_now();
+    info!(
+        event = "tunnel.open",
+        kind = "tcp",
+        port = port,
+        url = %url,
+        client_ip = %client_ip,
+        connected_at = connected_at,
+        "tcp tunnel opened: {url} from {client_ip}"
+    );
     webhook.fire(serde_json::json!({
         "event": "tunnel.connect",
         "kind": "tcp",
@@ -533,13 +616,23 @@ async fn serve_tcp(
     let _ = listener_task.await;
     tcp_ports.lock().await.remove(&port);
     tunnels.lock().await.remove(&tunnel_key);
-    info!("deregistered tcp tunnel on port {port}");
+    let duration_secs = crate::store::unix_now() - connected_at;
+    info!(
+        event = "tunnel.close",
+        kind = "tcp",
+        port = port,
+        url = %url,
+        client_ip = %client_ip,
+        duration_secs = duration_secs,
+        "tcp tunnel closed: port {port} (duration {duration_secs}s)"
+    );
     webhook.fire(serde_json::json!({
         "event": "tunnel.disconnect",
         "kind": "tcp",
         "port": port,
         "url": url,
         "client_ip": client_ip,
+        "duration_secs": duration_secs,
     }));
     Ok(())
 }

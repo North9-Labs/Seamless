@@ -53,6 +53,8 @@ pub struct AppState {
     pub webhook_url: Arc<Option<String>>,
     /// Max simultaneous tunnels per client IP (0 = unlimited).
     pub max_tunnels_per_ip: u32,
+    /// Global max simultaneous tunnels across all IPs (0 = unlimited).
+    pub max_tunnels: u32,
     /// Per-IP new-connection rate limiter.
     pub rate_limiter: RateLimiter,
     /// Allowed CIDRs for admin UI access. Empty = allow all.
@@ -137,6 +139,11 @@ struct Args {
     /// Max new tunnel registrations per minute per client IP (0 = unlimited).
     #[arg(long, default_value_t = 10, env = "SEAMLESS_RATE_LIMIT")]
     rate_limit: u32,
+
+    /// Global maximum simultaneous tunnels across all clients (0 = unlimited).
+    /// Reaching this cap causes new tunnel attempts to be rejected with 503.
+    #[arg(long, default_value_t = 1000, env = "SEAMLESS_MAX_TUNNELS")]
+    max_tunnels: u32,
 
     /// Log output format: "text" (human-readable, default) or "json" (structured, for SIEM/log aggregators).
     #[arg(long, default_value = "text", value_parser = ["text", "json"], env = "SEAMLESS_LOG_FORMAT")]
@@ -260,6 +267,7 @@ async fn main() -> Result<()> {
         auth_file: Arc::new(args.auth_file.clone()),
         webhook_url: Arc::new(args.webhook_url.clone()),
         max_tunnels_per_ip: args.max_tunnels_per_ip,
+        max_tunnels: args.max_tunnels,
         rate_limiter: RateLimiter::new(args.rate_limit, Duration::from_secs(60)),
         admin_cidrs: Arc::new(admin_cidrs),
     };
@@ -390,6 +398,7 @@ async fn main() -> Result<()> {
                         webhook_url: (*s.webhook_url).clone().map(Arc::new),
                         http_client: s.http_client.clone(),
                         max_tunnels_per_ip: s.max_tunnels_per_ip,
+                        max_tunnels: s.max_tunnels,
                         rate_limiter: s.rate_limiter,
                     };
                     if let Err(e) = tunnel::handle_client(mux, ctx).await {

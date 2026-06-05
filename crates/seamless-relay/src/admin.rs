@@ -436,6 +436,10 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let bytes_out = s.metrics.bytes_out.load(Ordering::Relaxed);
     let connections_total = s.metrics.connections_total.load(Ordering::Relaxed);
     let handshake_avg = s.metrics.handshake_avg_ms();
+    let auth_failures = s.metrics.auth_failures_total.load(Ordering::Relaxed);
+    let rate_limit_hits = s.metrics.rate_limit_hits_total.load(Ordering::Relaxed);
+    let tunnel_cap_rejections = s.metrics.tunnel_cap_rejections_total.load(Ordering::Relaxed);
+    let subdomain_invalid = s.metrics.subdomain_invalid_total.load(Ordering::Relaxed);
 
     let uptime_secs = s.start_time.elapsed().as_secs();
     let version = env!("CARGO_PKG_VERSION");
@@ -460,7 +464,19 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
          seamless_connections_total {connections_total}\n\
          # HELP seamless_handshake_duration_ms_avg Average Seam handshake duration\n\
          # TYPE seamless_handshake_duration_ms_avg gauge\n\
-         seamless_handshake_duration_ms_avg {handshake_avg:.1}\n"
+         seamless_handshake_duration_ms_avg {handshake_avg:.1}\n\
+         # HELP seamless_auth_failures_total Total authentication failures (missing or invalid token)\n\
+         # TYPE seamless_auth_failures_total counter\n\
+         seamless_auth_failures_total {auth_failures}\n\
+         # HELP seamless_rate_limit_hits_total Total connections rejected by the per-IP rate limiter\n\
+         # TYPE seamless_rate_limit_hits_total counter\n\
+         seamless_rate_limit_hits_total {rate_limit_hits}\n\
+         # HELP seamless_tunnel_cap_rejections_total Total connections rejected due to global tunnel cap\n\
+         # TYPE seamless_tunnel_cap_rejections_total counter\n\
+         seamless_tunnel_cap_rejections_total {tunnel_cap_rejections}\n\
+         # HELP seamless_subdomain_invalid_total Total subdomain validation failures\n\
+         # TYPE seamless_subdomain_invalid_total counter\n\
+         seamless_subdomain_invalid_total {subdomain_invalid}\n"
     );
 
     (
@@ -486,6 +502,8 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "auth_file": auth_file,
         "uptime_secs": uptime_secs,
         "version": env!("CARGO_PKG_VERSION"),
+        "max_tunnels": s.max_tunnels,
+        "max_tunnels_per_ip": s.max_tunnels_per_ip,
     }))
 }
 

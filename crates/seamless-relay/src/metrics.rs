@@ -22,6 +22,14 @@ pub struct Metrics {
     pub handshake_ms_total: Arc<AtomicU64>,
     /// Number of completed handshakes (used as denominator for the avg).
     pub handshake_count: Arc<AtomicU64>,
+    /// Total auth failures (missing or invalid token).
+    pub auth_failures_total: Arc<AtomicU64>,
+    /// Total connections rejected by the per-IP rate limiter.
+    pub rate_limit_hits_total: Arc<AtomicU64>,
+    /// Total connections rejected because the global tunnel cap was reached.
+    pub tunnel_cap_rejections_total: Arc<AtomicU64>,
+    /// Total subdomain validation failures.
+    pub subdomain_invalid_total: Arc<AtomicU64>,
 }
 
 pub fn new_metrics() -> Metrics {
@@ -52,5 +60,21 @@ impl Metrics {
             return 0.0;
         }
         self.handshake_ms_total.load(Ordering::Relaxed) as f64 / count as f64
+    }
+
+    pub fn inc_auth_failures(&self) {
+        self.auth_failures_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_rate_limit_hits(&self) {
+        self.rate_limit_hits_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_tunnel_cap_rejections(&self) {
+        self.tunnel_cap_rejections_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_subdomain_invalid(&self) {
+        self.subdomain_invalid_total.fetch_add(1, Ordering::Relaxed);
     }
 }
