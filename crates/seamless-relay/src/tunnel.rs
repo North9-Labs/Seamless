@@ -113,6 +113,7 @@ pub async fn handle_client(
     http_port: u16,
     auth: AuthPolicy,
     metrics: Metrics,
+    client_ip: String,
 ) -> Result<()> {
     let t0 = Instant::now();
 
@@ -160,10 +161,10 @@ pub async fn handle_client(
 
     match kind {
         TunnelKind::Http { subdomain } => {
-            serve_http(mux, control, tunnels, base_domain, http_port, subdomain, metrics).await
+            serve_http(mux, control, tunnels, base_domain, http_port, subdomain, metrics, client_ip).await
         }
         TunnelKind::Tcp { port } => {
-            serve_tcp(mux, control, tunnels, tcp_ports, base_domain, port, metrics).await
+            serve_tcp(mux, control, tunnels, tcp_ports, base_domain, port, metrics, client_ip).await
         }
     }
 }
@@ -178,6 +179,7 @@ async fn serve_http(
     http_port: u16,
     subdomain: Option<String>,
     _metrics: Metrics,
+    client_ip: String,
 ) -> Result<()> {
     let sub = subdomain.unwrap_or_else(random_subdomain);
     let url = if http_port == 80 {
@@ -196,7 +198,7 @@ async fn serve_http(
         mux: mux.clone(),
         subdomain: sub.clone(),
         connected_at: crate::store::unix_now(),
-        client_ip: String::new(), // Seam connections don't expose a meaningful client IP here
+        client_ip,
         bytes_in: bytes_in.clone(),
         bytes_out: bytes_out.clone(),
         paused: paused.clone(),
@@ -264,6 +266,7 @@ async fn serve_tcp(
     base_domain: String,
     requested_port: u16,
     _metrics: Metrics,
+    client_ip: String,
 ) -> Result<()> {
     let (listener, port) = match requested_port {
         0 => bind_random_port(&tcp_ports).await?,
@@ -289,7 +292,7 @@ async fn serve_tcp(
         mux: mux.clone(),
         subdomain: tunnel_key.clone(),
         connected_at: crate::store::unix_now(),
-        client_ip: String::new(),
+        client_ip,
         bytes_in: bytes_in.clone(),
         bytes_out: bytes_out.clone(),
         paused: Arc::new(AtomicBool::new(false)),

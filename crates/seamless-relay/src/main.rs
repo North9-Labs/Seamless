@@ -223,6 +223,7 @@ async fn main() -> Result<()> {
                 let Some(conn) = conn else { break };
                 let remote = conn.remote_addr().await;
                 info!("seam connection from {remote}");
+                let client_ip = remote.ip().to_string();
                 let mux = SeamMux::new(conn);
                 let s = state.clone();
                 tokio::spawn(async move {
@@ -234,6 +235,7 @@ async fn main() -> Result<()> {
                         s.http_port,
                         s.auth,
                         s.metrics,
+                        client_ip,
                     )
                     .await
                     {
