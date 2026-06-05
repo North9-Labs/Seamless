@@ -745,11 +745,16 @@ async fn admin_audit_query(
 async fn health_check(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let tunnels = s.tunnels.lock().await.len();
     let uptime_secs = s.start_time.elapsed().as_secs();
+    let ws_active = s.metrics.ws_connections_active.load(Ordering::Relaxed);
+    let tls_version = if s.https_port.is_some() { "TLS1.3" } else { "none" };
     Json(serde_json::json!({
         "status": "ok",
-        "tunnels": tunnels,
-        "uptime_secs": uptime_secs,
         "version": env!("CARGO_PKG_VERSION"),
+        "uptime_seconds": uptime_secs,
+        "tunnels_active": tunnels,
+        "ws_connections_active": ws_active,
+        "tls_version": tls_version,
+        "fips_mode": false,
     }))
 }
 
@@ -757,11 +762,16 @@ async fn ready_check(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     // The relay is ready as long as the tunnels map is accessible.
     let tunnels = s.tunnels.lock().await.len();
     let uptime_secs = s.start_time.elapsed().as_secs();
+    let ws_active = s.metrics.ws_connections_active.load(Ordering::Relaxed);
+    let tls_version = if s.https_port.is_some() { "TLS1.3" } else { "none" };
     Json(serde_json::json!({
         "status": "ok",
-        "tunnels": tunnels,
-        "uptime_secs": uptime_secs,
         "version": env!("CARGO_PKG_VERSION"),
+        "uptime_seconds": uptime_secs,
+        "tunnels_active": tunnels,
+        "ws_connections_active": ws_active,
+        "tls_version": tls_version,
+        "fips_mode": false,
     }))
 }
 
@@ -776,6 +786,7 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let tunnel_cap_rejections = s.metrics.tunnel_cap_rejections_total.load(Ordering::Relaxed);
     let subdomain_invalid = s.metrics.subdomain_invalid_total.load(Ordering::Relaxed);
     let tunnel_per_ip_rejections = s.metrics.tunnel_per_ip_rejections_total.load(Ordering::Relaxed);
+    let ws_connections_active = s.metrics.ws_connections_active.load(Ordering::Relaxed);
 
     let uptime_secs = s.start_time.elapsed().as_secs();
     let version = env!("CARGO_PKG_VERSION");
@@ -817,6 +828,9 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
          # HELP seamless_tunnel_per_ip_rejections_total Total connections rejected due to per-IP tunnel limit\n\
          # TYPE seamless_tunnel_per_ip_rejections_total counter\n\
          seamless_tunnel_per_ip_rejections_total {tunnel_per_ip_rejections}\n\
+         # HELP seamless_ws_connections_active Currently active WebSocket connections being tunnelled\n\
+         # TYPE seamless_ws_connections_active gauge\n\
+         seamless_ws_connections_active {ws_connections_active}\n\
          # HELP seamless_request_duration_seconds Proxied HTTP request duration from first byte received to last byte sent\n\
          # TYPE seamless_request_duration_seconds histogram\n\
          {latency_histogram}"

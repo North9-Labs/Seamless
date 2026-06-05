@@ -176,8 +176,10 @@ where
         let tunnels = state.tunnels.lock().await.len();
         let uptime_secs = state.start_time.elapsed().as_secs();
         let version = env!("CARGO_PKG_VERSION");
+        let ws_active = state.metrics.ws_connections_active.load(std::sync::atomic::Ordering::Relaxed);
+        let tls_version = if is_https { "TLS1.3" } else { "none" };
         let body = format!(
-            r#"{{"status":"ok","version":"{version}","uptime_secs":{uptime_secs},"tunnels":{tunnels}}}"#
+            r#"{{"status":"ok","version":"{version}","uptime_seconds":{uptime_secs},"tunnels_active":{tunnels},"ws_connections_active":{ws_active},"tls_version":"{tls_version}","fips_mode":false}}"#
         );
         let hsts = if is_https {
             "Strict-Transport-Security: max-age=63072000; includeSubDomains\r\n"
@@ -277,6 +279,7 @@ where
                 return Ok(());
             }
         };
+        let is_ws = is_websocket_upgrade(&head);
         let fwd_head = inject_forwarding_headers(&head, &peer.ip().to_string(), is_https);
         upstream.write_all(&fwd_head).await?;
         logs::push(&state.log_buffer, LogEntry {
@@ -287,7 +290,13 @@ where
             routed_to: format!("proxy:{url}"),
             status: 0, // upstream status comes back in the response stream; recorded as 0 = connected
         }).await;
-        tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
+        if is_ws {
+            state.metrics.inc_ws_connections();
+        }
+        tokio::io::copy_bidirectional(&mut stream, &mut upstream).await.ok();
+        if is_ws {
+            state.metrics.dec_ws_connections();
+        }
         return Ok(());
     }
 
@@ -349,6 +358,7 @@ where
                 return Ok(());
             }
 
+            let is_ws = is_websocket_upgrade(&head);
             state.metrics.inc_connections();
             logs::push(&state.log_buffer, LogEntry {
                 ts: unix_now(),
@@ -370,7 +380,13 @@ where
                 entry.bytes_in.fetch_add(n, Ordering::Relaxed);
                 state.metrics.inc_bytes_in(n);
             }
+            if is_ws {
+                state.metrics.inc_ws_connections();
+            }
             let (n_in, n_out) = copy_bidirectional_counted(&mut stream, &mut apex).await;
+            if is_ws {
+                state.metrics.dec_ws_connections();
+            }
             // Record latency from first byte received to last byte sent.
             let duration = req_start.elapsed();
             state.metrics.record_request_duration(duration);
@@ -520,6 +536,26 @@ fn inject_forwarding_headers(head: &[u8], peer_ip: &str, is_https: bool) -> Vec<
     out.extend_from_slice(injected.as_bytes());
     out.extend_from_slice(&head[split_at..]);
     out
+}
+
+/// Returns true when the raw HTTP header block contains an `Upgrade: websocket` header.
+fn is_websocket_upgrade(head: &[u8]) -> bool {
+    let Ok(s) = std::str::from_utf8(head) else { return false };
+    let mut has_upgrade_websocket = false;
+    let mut has_connection_upgrade = false;
+    for line in s.split("\r\n") {
+        if let Some(colon) = line.find(':') {
+            let name = line[..colon].trim();
+            let value = line[colon + 1..].trim();
+            if name.eq_ignore_ascii_case("upgrade") && value.eq_ignore_ascii_case("websocket") {
+                has_upgrade_websocket = true;
+            }
+            if name.eq_ignore_ascii_case("connection") && value.to_ascii_lowercase().contains("upgrade") {
+                has_connection_upgrade = true;
+            }
+        }
+    }
+    has_upgrade_websocket && has_connection_upgrade
 }
 
 /// Like `tokio::io::copy_bidirectional` but returns `(bytes_a_to_b, bytes_b_to_a)`.

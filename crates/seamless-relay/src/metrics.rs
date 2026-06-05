@@ -104,6 +104,8 @@ pub struct Metrics {
     pub tunnel_per_ip_rejections_total: Arc<AtomicU64>,
     /// Histogram of proxied HTTP request durations (first byte to last byte sent).
     pub request_duration: Histogram,
+    /// Currently active WebSocket connections being tunnelled.
+    pub ws_connections_active: Arc<AtomicU64>,
 }
 
 pub fn new_metrics() -> Metrics {
@@ -154,6 +156,14 @@ impl Metrics {
 
     pub fn inc_tunnel_per_ip_rejections(&self) {
         self.tunnel_per_ip_rejections_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_ws_connections(&self) {
+        self.ws_connections_active.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn dec_ws_connections(&self) {
+        self.ws_connections_active.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// Record the duration of one proxied HTTP request (from first-byte-received to
