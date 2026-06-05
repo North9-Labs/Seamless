@@ -69,6 +69,106 @@ impl ReservedSubdomains {
     }
 }
 
+// ── Subdomain blocklist (file-backed, reloadable on SIGHUP) ──────────────────
+
+/// Large blocklist of subdomains loaded from a file (one per line).
+/// Complements `ReservedSubdomains` (which is CLI-sized); this one handles
+/// thousands of entries (phishing names, brand-squatting, etc.) stored in a
+/// file that ops can maintain without restarting the relay.
+///
+/// Clone is O(1) — the inner `Arc<RwLock<…>>` is shared across all handlers.
+/// `SIGHUP` triggers `reload_from_file` in `main` to atomically swap the set.
+#[derive(Clone)]
+pub struct SubdomainBlocklist {
+    entries: Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
+    path: Arc<Option<std::path::PathBuf>>,
+}
+
+impl SubdomainBlocklist {
+    /// No blocklist file configured — all subdomains pass.
+    pub fn disabled() -> Self {
+        Self {
+            entries: Arc::new(std::sync::RwLock::new(std::collections::HashSet::new())),
+            path: Arc::new(None),
+        }
+    }
+
+    /// Load blocklist from `path`. Logs a warning but does NOT fail startup if
+    /// the file cannot be read — the relay operates with an empty blocklist.
+    pub fn from_file(path: &std::path::Path) -> Self {
+        let mut set = std::collections::HashSet::new();
+        let path_buf = path.to_path_buf();
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                for line in text.lines() {
+                    let line = line.trim().to_lowercase();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    set.insert(line);
+                }
+                tracing::info!(
+                    "blocklist: loaded {} entries from {}",
+                    set.len(),
+                    path.display()
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "blocklist: could not read {} — operating with empty blocklist: {e}",
+                    path.display()
+                );
+            }
+        }
+        Self {
+            entries: Arc::new(std::sync::RwLock::new(set)),
+            path: Arc::new(Some(path_buf)),
+        }
+    }
+
+    /// Atomically reload from the original file path.
+    /// Errors are logged and the existing blocklist is kept unchanged.
+    pub fn reload(&self) {
+        let Some(ref path) = *self.path else { return };
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let mut set = std::collections::HashSet::new();
+                for line in text.lines() {
+                    let line = line.trim().to_lowercase();
+                    if line.is_empty() || line.starts_with('#') { continue; }
+                    set.insert(line);
+                }
+                let count = set.len();
+                *self.entries.write().expect("blocklist RwLock poisoned") = set;
+                tracing::info!(
+                    "blocklist: reloaded {} entries from {}",
+                    count,
+                    path.display()
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "blocklist: reload failed for {} — keeping existing list: {e}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    /// Returns `true` if `sub` is present in the blocklist (case-insensitive).
+    pub fn is_blocked(&self, sub: &str) -> bool {
+        self.entries
+            .read()
+            .expect("blocklist RwLock poisoned")
+            .contains(&sub.to_lowercase())
+    }
+
+    /// `true` when a blocklist file is configured (even if empty).
+    pub fn is_enabled(&self) -> bool {
+        self.path.is_some()
+    }
+}
+
 // ── Sliding-window rate limiter ───────────────────────────────────────────────
 
 /// Sliding-window rate limiter: tracks connection timestamps per IP.
@@ -134,6 +234,8 @@ pub struct ConnCtx {
     pub subdomain_prefix: SubdomainPrefix,
     /// Number of random alphanumeric chars for auto-assigned subdomains (default 8, min 6).
     pub subdomain_length: usize,
+    /// File-backed blocklist of subdomains (reloaded on SIGHUP).
+    pub blocklist: SubdomainBlocklist,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -288,7 +390,7 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
     let ConnCtx {
         tunnels, tcp_ports, base_domain, http_port, https_port, auth, metrics, client_ip,
         webhook_url, http_client, max_tunnels_per_ip, rate_limiter, max_tunnels,
-        reserved_subdomains, subdomain_prefix, subdomain_length,
+        reserved_subdomains, subdomain_prefix, subdomain_length, blocklist,
     } = ctx;
     let webhook = WebhookCtx { url: webhook_url, client: http_client };
     let t0 = Instant::now();
@@ -454,7 +556,7 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     match kind {
         TunnelKind::Http { subdomain } => {
-            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook, &reserved_subdomains, &subdomain_prefix, subdomain_length).await
+            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook, &reserved_subdomains, &subdomain_prefix, subdomain_length, &blocklist).await
         }
         TunnelKind::Tcp { port } => {
             serve_tcp(mux, control, tunnels, tcp_ports, &base_domain, port, metrics, &client_ip, webhook).await
@@ -494,6 +596,7 @@ async fn serve_http(
     reserved: &ReservedSubdomains,
     prefix: &SubdomainPrefix,
     subdomain_length: usize,
+    blocklist: &SubdomainBlocklist,
 ) -> Result<()> {
     // Validate client-requested subdomains before falling back to random.
     if let Some(ref requested) = subdomain {
@@ -549,6 +652,26 @@ async fn serve_http(
             .await
             .ok();
             return Err(anyhow!("subdomain prefix violation for '{requested}': {e}"));
+        }
+        // Check against the file-backed blocklist (phishing names, brand-squatting, etc.)
+        if blocklist.is_blocked(requested) {
+            metrics.inc_subdomain_invalid();
+            tracing::warn!(
+                event = "subdomain.blocklisted",
+                client_ip = %client_ip,
+                subdomain = %requested,
+                "blocklisted subdomain '{requested}' requested by {client_ip}"
+            );
+            write_frame(
+                &mut control,
+                &ControlFrame::Error {
+                    code: 403,
+                    message: format!("subdomain '{requested}' is not available"),
+                },
+            )
+            .await
+            .ok();
+            return Err(anyhow!("blocklisted subdomain '{requested}' blocked for {client_ip}"));
         }
     }
     let sub = subdomain.unwrap_or_else(|| random_subdomain_with_length(subdomain_length));

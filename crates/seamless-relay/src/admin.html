@@ -848,9 +848,10 @@
             <th style="width:80px">Uptime</th>
             <th style="width:100px">In / Out</th>
             <th style="width:26px"></th>
+            <th style="width:26px"></th>
             <th style="width:110px"></th>
           </tr></thead>
-          <tbody id="seamless-tunnels-body"><tr><td colspan="6" class="empty-cell">
+          <tbody id="seamless-tunnels-body"><tr><td colspan="7" class="empty-cell">
             <div class="ei"><i data-lucide="cable" width="34" height="34"></i></div>
             <span class="et">No active tunnels</span>
             <span class="es">Connect a Seamless client using the command above</span>
@@ -1466,7 +1467,7 @@ function renderTunnelRows(rows) {
   var countEl = document.getElementById('tunnel-count');
   if (!rows.length) {
     var allEmpty = _allTunnelRows.length === 0;
-    tb.innerHTML = '<tr><td colspan="6" class="empty-cell">'
+    tb.innerHTML = '<tr><td colspan="7" class="empty-cell">'
       + (allEmpty
           ? '<div class="ei"><i data-lucide="cable" width="34" height="34"></i></div><span class="et">No active tunnels</span><span class="es">Connect a Seamless client using the command above</span>'
           : '<span class="t3">No tunnels match your filter</span>')
@@ -1481,17 +1482,35 @@ function renderTunnelRows(rows) {
     var sub = t.subdomain || '';
     var pauseBtn = sub ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="'+(t.paused?'resumeTunnel':'pauseTunnel')+'(\''+esc(sub)+'\')" title="'+(t.paused?'Resume':'Pause')+'"><i data-lucide="'+(t.paused?'play':'pause')+'" width="11" height="11"></i></button>' : '';
     var disconnBtn = sub ? '<button class="btn btn-danger btn-sm btn-icon" onclick="disconnectTunnel(\''+esc(sub)+'\')" title="Disconnect"><i data-lucide="x" width="11" height="11"></i></button>' : '';
+    var copyBtn = t.url ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="copyTunnelUrl(this,\''+esc(t.url)+'\')" title="Copy URL"><i data-lucide="copy" width="11" height="11"></i></button>' : '';
     var ipHint = t.client_ip ? '<div style="font-size:10px;color:var(--text3);margin-top:1px">'+esc(t.client_ip)+'</div>' : '';
     return '<tr>'
       + '<td class="tm">' + esc(t.url) + ipHint + '</td>'
       + '<td><span class="badge '+(t.kind==='HTTP'?'b-green':'b-blue')+'">'+t.kind+'</span>'+(t.paused?' <span class="badge b-amber">Paused</span>':'')+'</td>'
       + '<td class="t3">'+uptime+'</td>'
       + '<td class="t3 tm">↓'+fmtBytes(t.bytes_in)+' ↑'+fmtBytes(t.bytes_out)+'</td>'
+      + '<td>'+copyBtn+'</td>'
       + '<td>'+pauseBtn+'</td>'
       + '<td><div class="flex">'+disconnBtn+'</div></td>'
       + '</tr>';
   }).join('');
   lucide.createIcons();
+}
+
+function copyTunnelUrl(btn, url) {
+  navigator.clipboard.writeText(url).then(function() {
+    btn.innerHTML = '<i data-lucide="check" width="11" height="11"></i>';
+    btn.style.color = 'var(--green)';
+    btn.style.borderColor = 'var(--green)';
+    lucide.createIcons();
+    toast('URL copied to clipboard');
+    setTimeout(function() {
+      btn.innerHTML = '<i data-lucide="copy" width="11" height="11"></i>';
+      btn.style.color = '';
+      btn.style.borderColor = '';
+      lucide.createIcons();
+    }, 1400);
+  });
 }
 
 function fmtUptime(connectedAt) {

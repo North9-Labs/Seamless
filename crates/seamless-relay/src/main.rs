@@ -25,7 +25,7 @@ mod tunnel;
 use logs::LogBuffer;
 use metrics::Metrics;
 use store::SharedStore;
-use tunnel::{AuthPolicy, RateLimiter, ReservedSubdomains, SubdomainPrefix, TcpPortSet, TunnelMap};
+use tunnel::{AuthPolicy, RateLimiter, ReservedSubdomains, SubdomainBlocklist, SubdomainPrefix, TcpPortSet, TunnelMap};
 
 // ── Stats history ring buffer ─────────────────────────────────────────────────
 
@@ -113,6 +113,8 @@ pub struct AppState {
     pub stats_history: StatsHistory,
     /// Max proxied HTTP request body size in bytes (0 = unlimited).
     pub max_body_bytes: u64,
+    /// File-backed blocklist of subdomains (reloaded on SIGHUP).
+    pub blocklist: SubdomainBlocklist,
 }
 
 pub struct RelayPubkeys {
@@ -157,6 +159,7 @@ struct FileConfig {
     subdomain_length: Option<usize>,
     tunnel_max_age: Option<u64>,
     max_body_size: Option<u64>,
+    blocklist_file: Option<PathBuf>,
 }
 
 /// Find and load the TOML config file, returning the loaded config and the
@@ -348,6 +351,15 @@ struct Args {
     /// before they reach the tunnel backend, preventing memory exhaustion attacks.
     #[arg(long, default_value_t = 10 * 1024 * 1024, env = "SEAMLESS_MAX_BODY_SIZE")]
     max_body_size: u64,
+
+    /// Path to a newline-separated file of blocked subdomains.
+    /// Lines starting with '#' and blank lines are ignored.
+    /// Reloaded automatically on SIGHUP — no restart needed.
+    /// Useful for large lists (thousands of entries) of phishing names,
+    /// brand-squatting patterns, or otherwise forbidden subdomains.
+    /// Complements --reserved-subdomains (which is CLI-sized).
+    #[arg(long, env = "SEAMLESS_BLOCKLIST_FILE")]
+    blocklist_file: Option<PathBuf>,
 }
 
 /// Merge file-config values into `args` for any field that still holds its
@@ -449,6 +461,9 @@ fn apply_file_config(args: &mut Args, cfg: &FileConfig) {
     }
     if args.max_body_size == 10 * 1024 * 1024 {
         if let Some(v) = cfg.max_body_size { args.max_body_size = v; }
+    }
+    if args.blocklist_file.is_none() {
+        if let Some(ref v) = cfg.blocklist_file { args.blocklist_file = Some(v.clone()); }
     }
 }
 
@@ -597,6 +612,12 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Load subdomain blocklist file if configured.
+    let blocklist = match &args.blocklist_file {
+        Some(path) => SubdomainBlocklist::from_file(path),
+        None => SubdomainBlocklist::disabled(),
+    };
+
     let state = AppState {
         store,
         store_path,
@@ -630,6 +651,7 @@ async fn main() -> Result<()> {
         tunnel_max_age: args.tunnel_max_age,
         stats_history: stats_history.clone(),
         max_body_bytes: args.max_body_size,
+        blocklist: blocklist.clone(),
     };
 
     // Warn if admin port is publicly bound without an IP allowlist.
@@ -746,11 +768,12 @@ async fn main() -> Result<()> {
         });
     }
 
-    // SIGHUP → hot-reload the auth token file (Unix only).
+    // SIGHUP → hot-reload the auth token file and blocklist (Unix only).
     #[cfg(unix)]
     {
         let auth = state.auth.clone();
         let auth_file = state.auth_file.clone();
+        let blocklist_for_sighup = blocklist.clone();
         tokio::spawn(async move {
             use tokio::signal::unix::{SignalKind, signal};
             let mut sighup = signal(SignalKind::hangup()).expect("SIGHUP handler");
@@ -763,6 +786,9 @@ async fn main() -> Result<()> {
                     }
                 } else {
                     info!("SIGHUP: no auth file configured, nothing to reload");
+                }
+                if blocklist_for_sighup.is_enabled() {
+                    blocklist_for_sighup.reload();
                 }
             }
         });
@@ -894,6 +920,7 @@ async fn main() -> Result<()> {
                         reserved_subdomains: s.reserved_subdomains,
                         subdomain_prefix: s.subdomain_prefix,
                         subdomain_length: s.subdomain_length,
+                        blocklist: s.blocklist,
                     };
                     if let Err(e) = tunnel::handle_client(mux, ctx).await {
                         warn!("client from {remote} ended: {e:#}");

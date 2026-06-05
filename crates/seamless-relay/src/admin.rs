@@ -49,6 +49,8 @@ pub async fn start_admin(
         .route("/api/routes/{id}", put(update_route).delete(delete_route))
         // Seamless tunnels — read-only list (protected by admin token)
         .route("/api/tunnels", get(list_seamless_tunnels))
+        // Single tunnel details by ID
+        .route("/api/tunnels/{id}", get(get_seamless_tunnel))
         // Stats history ring buffer
         .route("/api/stats/history", get(stats_history_handler))
         // Seamless tunnels — admin management (protected by Bearer token)
@@ -346,6 +348,69 @@ async fn list_seamless_tunnels(
         })
         .collect();
     Json(serde_json::json!({ "http": http, "tcp": tcp })).into_response()
+}
+
+// ── Single tunnel details (read-only) ────────────────────────────────────────
+
+/// `GET /api/tunnels/:id` — return details for a single tunnel by subdomain key.
+/// Returns the same fields as the list endpoint for the matching tunnel, plus
+/// `tunnel_type` ("http" | "tcp") for easier programmatic use.
+async fn get_seamless_tunnel(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    let now = unix_now();
+    let is_tcp = entry.subdomain.starts_with("tcp:");
+    let json = if is_tcp {
+        let port = entry.subdomain.trim_start_matches("tcp:");
+        serde_json::json!({
+            "id": entry.subdomain,
+            "tunnel_type": "tcp",
+            "url": format!("tcp://{}:{}", s.base_domain.as_ref(), port),
+            "connected_at": entry.connected_at,
+            "uptime_secs": now - entry.connected_at,
+            "client_ip": entry.client_ip,
+            "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
+            "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
+            "paused": entry.paused.load(Ordering::Relaxed),
+        })
+    } else {
+        let url = if let Some(port) = s.https_port {
+            if port == 443 {
+                format!("https://{}.{}", entry.subdomain, s.base_domain)
+            } else {
+                format!("https://{}.{}:{}", entry.subdomain, s.base_domain, port)
+            }
+        } else if s.http_port == 80 {
+            format!("http://{}.{}", entry.subdomain, s.base_domain)
+        } else {
+            format!("http://{}.{}:{}", entry.subdomain, s.base_domain, s.http_port)
+        };
+        serde_json::json!({
+            "id": entry.subdomain,
+            "tunnel_type": "http",
+            "subdomain": entry.subdomain,
+            "url": url,
+            "connected_at": entry.connected_at,
+            "uptime_secs": now - entry.connected_at,
+            "client_ip": entry.client_ip,
+            "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
+            "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
+            "paused": entry.paused.load(Ordering::Relaxed),
+        })
+    };
+    Json(json).into_response()
 }
 
 // ── Admin tunnel management (protected by Bearer token) ───────────────────────
