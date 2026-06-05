@@ -7,6 +7,7 @@
 HTTP · HTTPS · Raw TCP · Hybrid X25519 + ML-KEM-768
 
 [![CI](https://github.com/North9LLC/Seamless/actions/workflows/ci.yml/badge.svg)](https://github.com/North9LLC/Seamless/actions/workflows/ci.yml)
+[![Security Audit](https://github.com/North9LLC/Seamless/actions/workflows/security.yml/badge.svg)](https://github.com/North9LLC/Seamless/actions/workflows/security.yml)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#building-from-source)
 [![Seam v0.1.5](https://img.shields.io/badge/seam-v0.1.5-blue.svg)](https://github.com/North9-Labs/Seam)
