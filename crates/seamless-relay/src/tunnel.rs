@@ -25,9 +25,13 @@ pub struct ConnCtx {
     pub tcp_ports: TcpPortSet,
     pub base_domain: String,
     pub http_port: u16,
+    pub https_port: Option<u16>,
     pub auth: AuthPolicy,
     pub metrics: Metrics,
     pub client_ip: String,
+    /// Optional URL to POST webhook events to.
+    pub webhook_url: Option<Arc<String>>,
+    pub http_client: reqwest::Client,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -138,10 +142,35 @@ pub enum AuthError {
     Invalid,
 }
 
+/// Webhook delivery context cloned into each tunnel handler.
+#[derive(Clone)]
+pub struct WebhookCtx {
+    pub url: Option<Arc<String>>,
+    pub client: reqwest::Client,
+}
+
+impl WebhookCtx {
+    /// POST `body` to the configured webhook URL in a background task.
+    /// Failures are logged but never propagate to the caller.
+    pub fn fire(&self, body: serde_json::Value) {
+        let Some(url) = self.url.clone() else { return };
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            if let Err(e) = client.post(url.as_str()).json(&body).send().await {
+                warn!("webhook delivery failed: {e:#}");
+            }
+        });
+    }
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
-    let ConnCtx { tunnels, tcp_ports, base_domain, http_port, auth, metrics, client_ip } = ctx;
+    let ConnCtx {
+        tunnels, tcp_ports, base_domain, http_port, https_port, auth, metrics, client_ip,
+        webhook_url, http_client,
+    } = ctx;
+    let webhook = WebhookCtx { url: webhook_url, client: http_client };
     let t0 = Instant::now();
 
     let mut control = mux
@@ -188,10 +217,10 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     match kind {
         TunnelKind::Http { subdomain } => {
-            serve_http(mux, control, tunnels, &base_domain, http_port, subdomain, metrics, &client_ip).await
+            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook).await
         }
         TunnelKind::Tcp { port } => {
-            serve_tcp(mux, control, tunnels, tcp_ports, &base_domain, port, metrics, &client_ip).await
+            serve_tcp(mux, control, tunnels, tcp_ports, &base_domain, port, metrics, &client_ip, webhook).await
         }
     }
 }
@@ -205,12 +234,20 @@ async fn serve_http(
     tunnels: TunnelMap,
     base_domain: &str,
     http_port: u16,
+    https_port: Option<u16>,
     subdomain: Option<String>,
     _metrics: Metrics,
     client_ip: &str,
+    webhook: WebhookCtx,
 ) -> Result<()> {
     let sub = subdomain.unwrap_or_else(random_subdomain);
-    let url = if http_port == 80 {
+    let url = if let Some(port) = https_port {
+        if port == 443 {
+            format!("https://{sub}.{base_domain}")
+        } else {
+            format!("https://{sub}.{base_domain}:{port}")
+        }
+    } else if http_port == 80 {
         format!("http://{sub}.{base_domain}")
     } else {
         format!("http://{sub}.{base_domain}:{http_port}")
@@ -252,6 +289,13 @@ async fn serve_http(
 
     write_frame(&mut control, &ControlFrame::Registered { public_url: url.clone() }).await?;
     info!("registered http tunnel: {url}");
+    webhook.fire(serde_json::json!({
+        "event": "tunnel.connect",
+        "kind": "http",
+        "subdomain": sub,
+        "url": url,
+        "client_ip": client_ip,
+    }));
 
     let mut ping_interval = tokio::time::interval(Duration::from_secs(25));
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -281,6 +325,13 @@ async fn serve_http(
 
     tunnels.lock().await.remove(&sub);
     info!("deregistered http tunnel for subdomain {sub}");
+    webhook.fire(serde_json::json!({
+        "event": "tunnel.disconnect",
+        "kind": "http",
+        "subdomain": sub,
+        "url": url,
+        "client_ip": client_ip,
+    }));
     Ok(())
 }
 
@@ -296,6 +347,7 @@ async fn serve_tcp(
     requested_port: u16,
     metrics: Metrics,
     client_ip: &str,
+    webhook: WebhookCtx,
 ) -> Result<()> {
     let (listener, port) = match requested_port {
         0 => bind_random_port(&tcp_ports).await?,
@@ -311,6 +363,13 @@ async fn serve_tcp(
     let url = format!("tcp://{base_domain}:{port}");
     write_frame(&mut control, &ControlFrame::Registered { public_url: url.clone() }).await?;
     info!("registered tcp tunnel: {url}");
+    webhook.fire(serde_json::json!({
+        "event": "tunnel.connect",
+        "kind": "tcp",
+        "port": port,
+        "url": url,
+        "client_ip": client_ip,
+    }));
 
     let (disconnect_tx, disconnect_rx) = oneshot::channel::<()>();
     let bytes_in = Arc::new(AtomicU64::new(0));
@@ -369,6 +428,13 @@ async fn serve_tcp(
     tcp_ports.lock().await.remove(&port);
     tunnels.lock().await.remove(&tunnel_key);
     info!("deregistered tcp tunnel on port {port}");
+    webhook.fire(serde_json::json!({
+        "event": "tunnel.disconnect",
+        "kind": "tcp",
+        "port": port,
+        "url": url,
+        "client_ip": client_ip,
+    }));
     Ok(())
 }
 

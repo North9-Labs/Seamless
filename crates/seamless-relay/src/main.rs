@@ -49,6 +49,8 @@ pub struct AppState {
     pub cipher: Arc<String>,
     /// Path to the auth token file, if any. Stored so SIGHUP can reload it.
     pub auth_file: Arc<Option<PathBuf>>,
+    /// Optional webhook URL to POST tunnel events to.
+    pub webhook_url: Arc<Option<String>>,
 }
 
 pub struct RelayPubkeys {
@@ -107,6 +109,11 @@ struct Args {
     /// Generate and use a self-signed TLS certificate for HTTPS.
     #[arg(long, default_value_t = false)]
     tls_self_signed: bool,
+
+    /// Optional URL to POST webhook events to (tunnel.connect / tunnel.disconnect).
+    /// If set, the relay will POST JSON to this URL when tunnels register or disconnect.
+    #[arg(long, env = "SEAMLESS_WEBHOOK_URL")]
+    webhook_url: Option<String>,
 
     /// AEAD cipher suite preference for tunnel connections.
     /// "chacha20poly1305" (default) or "aes256gcm" (CNSA 2.0).
@@ -185,6 +192,7 @@ async fn main() -> Result<()> {
         admin_token: Arc::new(args.admin_token),
         cipher: Arc::new(args.cipher.clone()),
         auth_file: Arc::new(args.auth_file.clone()),
+        webhook_url: Arc::new(args.webhook_url.clone()),
     };
 
     // Start admin UI server.
@@ -273,9 +281,12 @@ async fn main() -> Result<()> {
                         tcp_ports: s.tcp_ports,
                         base_domain: (*s.base_domain).clone(),
                         http_port: s.http_port,
+                        https_port: s.https_port,
                         auth: s.auth,
                         metrics: s.metrics,
                         client_ip,
+                        webhook_url: (*s.webhook_url).clone().map(Arc::new),
+                        http_client: s.http_client.clone(),
                     };
                     if let Err(e) = tunnel::handle_client(mux, ctx).await {
                         warn!("client from {remote} ended: {e:#}");
