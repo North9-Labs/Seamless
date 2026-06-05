@@ -20,7 +20,7 @@ pub async fn run_http_ingress(addr: SocketAddr, state: AppState) -> Result<()> {
         let (tcp, peer) = listener.accept().await?;
         let state = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = route_http(tcp, peer, state).await {
+            if let Err(e) = route_http(tcp, peer, state, false).await {
                 warn!("http conn from {peer}: {e:#}");
             }
         });
@@ -41,7 +41,7 @@ pub async fn run_https_ingress(
         tokio::spawn(async move {
             match acceptor.accept(tcp).await {
                 Ok(tls_stream) => {
-                    if let Err(e) = route_http(tls_stream, peer, state).await {
+                    if let Err(e) = route_http(tls_stream, peer, state, true).await {
                         warn!("https conn from {peer}: {e:#}");
                     }
                 }
@@ -53,7 +53,7 @@ pub async fn run_https_ingress(
     }
 }
 
-async fn route_http<S>(mut stream: S, peer: SocketAddr, state: AppState) -> Result<()>
+async fn route_http<S>(mut stream: S, peer: SocketAddr, state: AppState, is_https: bool) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -175,7 +175,8 @@ where
                 return Ok(());
             }
         };
-        upstream.write_all(&head).await?;
+        let fwd_head = inject_forwarding_headers(&head, &peer.ip().to_string(), is_https);
+        upstream.write_all(&fwd_head).await?;
         logs::push(&state.log_buffer, LogEntry {
             ts: unix_now(),
             method,
@@ -222,8 +223,9 @@ where
             let mut apex = entry.mux.open_stream().await;
             write_frame(&mut apex, &ControlFrame::NewConn { peer_addr: peer.to_string() }).await?;
             if !head.is_empty() {
-                let n = head.len() as u64;
-                apex.write_all(&head).await?;
+                let fwd_head = inject_forwarding_headers(&head, &peer.ip().to_string(), is_https);
+                let n = fwd_head.len() as u64;
+                apex.write_all(&fwd_head).await?;
                 entry.bytes_in.fetch_add(n, Ordering::Relaxed);
                 state.metrics.inc_bytes_in(n);
             }
@@ -308,6 +310,26 @@ pub fn parse_upstream_addr(url: &str) -> Result<String> {
     }
 }
 
+/// Inject X-Forwarded-For, X-Real-IP, and X-Forwarded-Proto headers into raw HTTP head bytes.
+/// Inserts after the request line so backend services can see the real client IP and protocol.
+fn inject_forwarding_headers(head: &[u8], peer_ip: &str, is_https: bool) -> Vec<u8> {
+    // Find the end of the first line (request line).
+    let split_at = head.windows(2).position(|w| w == b"\r\n");
+    let split_at = match split_at {
+        Some(i) => i + 2, // include the \r\n
+        None => return head.to_vec(), // malformed — pass through unchanged
+    };
+    let proto = if is_https { "https" } else { "http" };
+    let injected = format!(
+        "X-Forwarded-For: {peer_ip}\r\nX-Real-IP: {peer_ip}\r\nX-Forwarded-Proto: {proto}\r\n"
+    );
+    let mut out = Vec::with_capacity(head.len() + injected.len());
+    out.extend_from_slice(&head[..split_at]);
+    out.extend_from_slice(injected.as_bytes());
+    out.extend_from_slice(&head[split_at..]);
+    out
+}
+
 /// Like `tokio::io::copy_bidirectional` but returns `(bytes_a_to_b, bytes_b_to_a)`.
 async fn copy_bidirectional_counted<A, B>(a: &mut A, b: &mut B) -> (u64, u64)
 where
@@ -372,5 +394,25 @@ mod tests {
     fn parse_upstream_addr_empty() {
         assert!(parse_upstream_addr("http://").is_err());
         assert!(parse_upstream_addr("").is_err());
+    }
+
+    #[test]
+    fn inject_forwarding_headers_basic() {
+        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let out = inject_forwarding_headers(raw, "1.2.3.4", false);
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(s.starts_with("GET / HTTP/1.1\r\n"), "request line first");
+        assert!(s.contains("X-Forwarded-For: 1.2.3.4\r\n"));
+        assert!(s.contains("X-Real-IP: 1.2.3.4\r\n"));
+        assert!(s.contains("X-Forwarded-Proto: http\r\n"));
+        assert!(s.ends_with("Host: example.com\r\n\r\n"));
+    }
+
+    #[test]
+    fn inject_forwarding_headers_https() {
+        let raw = b"GET / HTTP/1.1\r\nHost: secure.example.com\r\n\r\n";
+        let out = inject_forwarding_headers(raw, "10.0.0.1", true);
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(s.contains("X-Forwarded-Proto: https\r\n"));
     }
 }

@@ -1038,6 +1038,7 @@
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
               <span id="s-cipher"></span>
               <span id="s-auth"></span>
+              <span id="s-uptime"></span>
             </div>
             <div class="hint" style="margin-top:6px">
               <i data-lucide="lock" width="10" height="10" style="vertical-align:middle;margin-right:3px"></i>
@@ -1505,6 +1506,11 @@ async function loadStatus() {
       : '<span class="badge b-yellow">Open (no auth)</span>';
     ['ki-cipher','s-cipher'].forEach(function(id){var el=document.getElementById(id);if(el)el.innerHTML=cipherBadge;});
     ['ki-auth','s-auth'].forEach(function(id){var el=document.getElementById(id);if(el)el.innerHTML=authBadge;});
+    var up = s.uptime_secs || 0;
+    var h = Math.floor(up/3600), m = Math.floor((up%3600)/60), sc = up%60;
+    var upStr = h ? h+'h '+m+'m' : m ? m+'m '+sc+'s' : sc+'s';
+    var uptimeBadge = '<span class="badge b-muted" title="v'+(s.version||'?')+'">up '+upStr+'</span>';
+    var el = document.getElementById('s-uptime'); if(el) el.innerHTML=uptimeBadge;
   } catch(e) {}
 }
 

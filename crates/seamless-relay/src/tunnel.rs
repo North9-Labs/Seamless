@@ -574,7 +574,7 @@ mod tests {
     fn policy_with(tokens: &[&str]) -> AuthPolicy {
         use std::collections::HashSet;
         AuthPolicy {
-            allowed: Some(Arc::new(tokens.iter().map(|s| s.to_string()).collect::<HashSet<_>>())),
+            allowed: Some(Arc::new(std::sync::RwLock::new(tokens.iter().map(|s| s.to_string()).collect::<HashSet<_>>()))),
         }
     }
 
