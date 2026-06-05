@@ -755,7 +755,7 @@
         <div class="hero-sub">Active connections — X25519 + ML-KEM-768 hybrid KEM, ChaCha20-Poly1305</div>
       </div>
       <div class="hero-actions">
-        <span style="font-size:11px;color:var(--text3)">Auto-refreshes every 5s</span>
+        <span style="font-size:11px;color:var(--text3)">Auto-refreshes every 5s &mdash; <span id="tunnel-last-updated">updating…</span></span>
       </div>
     </div>
     <div class="content">
@@ -1441,9 +1441,29 @@ function fmtBytes(n) {
   if (n < 1024*1024) return (n/1024).toFixed(1) + 'K';
   return (n/(1024*1024)).toFixed(1) + 'M';
 }
+var _tunnelLastUpdated = null;
+
+function _fmtAgo(ts) {
+  if (!ts) return 'never';
+  var secs = Math.round((Date.now() - ts) / 1000);
+  if (secs < 5)  return 'just now';
+  if (secs < 60) return secs + 's ago';
+  return Math.round(secs / 60) + 'm ago';
+}
+
+function _updateTunnelAgo() {
+  var el = document.getElementById('tunnel-last-updated');
+  if (el) el.textContent = _fmtAgo(_tunnelLastUpdated);
+}
+
+// Refresh the "X ago" label every second so it counts up live.
+setInterval(_updateTunnelAgo, 1000);
+
 async function loadSeamlessTunnels() {
   try {
     var d = await api('GET','/tunnels');
+    _tunnelLastUpdated = Date.now();
+    _updateTunnelAgo();
     var tb = document.getElementById('seamless-tunnels-body');
     var rows = [];
     d.http.forEach(function(t) {

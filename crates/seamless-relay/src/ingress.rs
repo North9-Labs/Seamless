@@ -106,6 +106,29 @@ where
     };
     let (method, path) = parse_request_line(&head);
 
+    // Intercept GET /health — health check for load balancers and k8s probes.
+    // Returns JSON with no auth required. Served on the public ingress port so
+    // it's reachable from wherever the ingress is, not just the admin port.
+    if method == "GET" && (path == "/health" || path == "/health/") {
+        let tunnels = state.tunnels.lock().await.len();
+        let uptime_secs = state.start_time.elapsed().as_secs();
+        let version = env!("CARGO_PKG_VERSION");
+        let body = format!(
+            r#"{{"status":"ok","version":"{version}","uptime_secs":{uptime_secs},"tunnels":{tunnels}}}"#
+        );
+        let hsts = if is_https {
+            "Strict-Transport-Security: max-age=63072000; includeSubDomains\r\n"
+        } else {
+            ""
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n{hsts}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(resp.as_bytes()).await.ok();
+        return Ok(());
+    }
+
     // 1. Check proxy routes (static upstreams).
     let upstream_url = {
         let host_only = host.split(':').next().unwrap_or(&host).to_lowercase();

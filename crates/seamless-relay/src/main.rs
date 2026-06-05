@@ -25,7 +25,7 @@ mod tunnel;
 use logs::LogBuffer;
 use metrics::Metrics;
 use store::SharedStore;
-use tunnel::{AuthPolicy, RateLimiter, TcpPortSet, TunnelMap};
+use tunnel::{AuthPolicy, RateLimiter, ReservedSubdomains, TcpPortSet, TunnelMap};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -62,6 +62,8 @@ pub struct AppState {
     pub admin_cidrs: Arc<Vec<(u32, u32)>>,
     /// Path to the config file that was loaded at startup, if any.
     pub config_file: Arc<Option<PathBuf>>,
+    /// Subdomains blocked from registration (e.g., "admin", "www", "api").
+    pub reserved_subdomains: ReservedSubdomains,
 }
 
 pub struct RelayPubkeys {
@@ -101,6 +103,7 @@ struct FileConfig {
     admin_tls_cert: Option<String>,
     admin_tls_key: Option<String>,
     admin_client_ca: Option<String>,
+    reserved_subdomains: Option<String>,
 }
 
 /// Find and load the TOML config file, returning the loaded config and the
@@ -261,6 +264,12 @@ struct Args {
     /// signed by this CA will be allowed to connect — recommended for government deployments.
     #[arg(long, env = "SEAMLESS_ADMIN_CLIENT_CA")]
     admin_client_ca: Option<String>,
+
+    /// Comma-separated list of subdomains that clients are forbidden from registering.
+    /// Example: "admin,www,api,mail,vpn,git,internal"
+    /// Attempts to claim a reserved subdomain return HTTP 403.
+    #[arg(long, env = "SEAMLESS_RESERVED_SUBDOMAINS")]
+    reserved_subdomains: Option<String>,
 }
 
 /// Merge file-config values into `args` for any field that still holds its
@@ -347,6 +356,9 @@ fn apply_file_config(args: &mut Args, cfg: &FileConfig) {
     }
     if args.admin_client_ca.is_none() {
         if let Some(ref v) = cfg.admin_client_ca { args.admin_client_ca = Some(v.clone()); }
+    }
+    if args.reserved_subdomains.is_none() {
+        if let Some(ref v) = cfg.reserved_subdomains { args.reserved_subdomains = Some(v.clone()); }
     }
 }
 
@@ -443,6 +455,25 @@ async fn main() -> Result<()> {
         info!("admin: no IP allowlist configured — all IPs permitted");
     }
 
+    // Parse reserved subdomains list.
+    let reserved_subdomains = {
+        let list: Vec<String> = args.reserved_subdomains
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !list.is_empty() {
+            info!(
+                "subdomain reservation: {} name(s) blocked: {}",
+                list.len(),
+                list.join(", ")
+            );
+        }
+        ReservedSubdomains::new(list)
+    };
+
     let state = AppState {
         store,
         store_path,
@@ -470,6 +501,7 @@ async fn main() -> Result<()> {
         rate_limiter: RateLimiter::new(args.rate_limit, Duration::from_secs(60)),
         admin_cidrs: Arc::new(admin_cidrs),
         config_file: Arc::new(config_file_path),
+        reserved_subdomains,
     };
 
     // Warn if admin port is publicly bound without an IP allowlist.
@@ -624,6 +656,7 @@ async fn main() -> Result<()> {
                         max_tunnels_per_ip: s.max_tunnels_per_ip,
                         max_tunnels: s.max_tunnels,
                         rate_limiter: s.rate_limiter,
+                        reserved_subdomains: s.reserved_subdomains,
                     };
                     if let Err(e) = tunnel::handle_client(mux, ctx).await {
                         warn!("client from {remote} ended: {e:#}");

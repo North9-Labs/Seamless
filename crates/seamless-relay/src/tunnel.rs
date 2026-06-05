@@ -17,6 +17,28 @@ use tracing::{info, warn};
 
 use crate::metrics::Metrics;
 
+// ── Reserved-subdomain guard ──────────────────────────────────────────────────
+
+/// Immutable set of subdomain names that clients may not register.
+/// Clone is O(1) — the inner `Arc` is shared across all connection handlers.
+#[derive(Clone)]
+pub struct ReservedSubdomains {
+    names: Arc<std::collections::HashSet<String>>,
+}
+
+impl ReservedSubdomains {
+    pub fn new(list: Vec<String>) -> Self {
+        Self {
+            names: Arc::new(list.into_iter().collect()),
+        }
+    }
+
+    /// Returns `true` if `sub` is reserved and must not be registered.
+    pub fn is_reserved(&self, sub: &str) -> bool {
+        self.names.contains(&sub.to_lowercase())
+    }
+}
+
 // ── Sliding-window rate limiter ───────────────────────────────────────────────
 
 /// Sliding-window rate limiter: tracks connection timestamps per IP.
@@ -76,6 +98,8 @@ pub struct ConnCtx {
     pub rate_limiter: RateLimiter,
     /// Global maximum simultaneous tunnels across all IPs (0 = unlimited).
     pub max_tunnels: u32,
+    /// Subdomains blocked from registration.
+    pub reserved_subdomains: ReservedSubdomains,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -230,6 +254,7 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
     let ConnCtx {
         tunnels, tcp_ports, base_domain, http_port, https_port, auth, metrics, client_ip,
         webhook_url, http_client, max_tunnels_per_ip, rate_limiter, max_tunnels,
+        reserved_subdomains,
     } = ctx;
     let webhook = WebhookCtx { url: webhook_url, client: http_client };
     let t0 = Instant::now();
@@ -366,7 +391,7 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     match kind {
         TunnelKind::Http { subdomain } => {
-            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook).await
+            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook, &reserved_subdomains).await
         }
         TunnelKind::Tcp { port } => {
             serve_tcp(mux, control, tunnels, tcp_ports, &base_domain, port, metrics, &client_ip, webhook).await
@@ -403,6 +428,7 @@ async fn serve_http(
     metrics: Metrics,
     client_ip: &str,
     webhook: WebhookCtx,
+    reserved: &ReservedSubdomains,
 ) -> Result<()> {
     // Validate client-requested subdomains before falling back to random.
     if let Some(ref requested) = subdomain {
@@ -417,6 +443,26 @@ async fn serve_http(
             );
             write_frame(&mut control, &ControlFrame::Error { code: 400, message: e.to_string() }).await.ok();
             return Err(anyhow!("invalid subdomain '{requested}': {e}"));
+        }
+        // Check against operator-configured reservation list.
+        if reserved.is_reserved(requested) {
+            metrics.inc_subdomain_invalid();
+            tracing::warn!(
+                event = "subdomain.reserved",
+                client_ip = %client_ip,
+                subdomain = %requested,
+                "reserved subdomain '{requested}' requested by {client_ip}"
+            );
+            write_frame(
+                &mut control,
+                &ControlFrame::Error {
+                    code: 403,
+                    message: format!("subdomain '{requested}' is reserved and cannot be registered"),
+                },
+            )
+            .await
+            .ok();
+            return Err(anyhow!("reserved subdomain '{requested}' blocked for {client_ip}"));
         }
     }
     let sub = subdomain.unwrap_or_else(random_subdomain);
@@ -850,5 +896,28 @@ mod tests {
         assert!(rl.check_and_record("1.1.1.1").await);
         assert!(!rl.check_and_record("1.1.1.1").await); // second from same IP denied
         assert!(rl.check_and_record("2.2.2.2").await);  // different IP still allowed
+    }
+
+    #[test]
+    fn reserved_subdomains_blocks_known_names() {
+        let rs = ReservedSubdomains::new(vec![
+            "admin".to_string(),
+            "www".to_string(),
+            "api".to_string(),
+        ]);
+        assert!(rs.is_reserved("admin"));
+        assert!(rs.is_reserved("www"));
+        assert!(rs.is_reserved("api"));
+        assert!(rs.is_reserved("ADMIN")); // case-insensitive
+        assert!(!rs.is_reserved("myapp"));
+        assert!(!rs.is_reserved("app-api")); // prefix match must not occur
+    }
+
+    #[test]
+    fn reserved_subdomains_empty_allows_all() {
+        let rs = ReservedSubdomains::new(vec![]);
+        assert!(!rs.is_reserved("admin"));
+        assert!(!rs.is_reserved("www"));
+        assert!(!rs.is_reserved("anything"));
     }
 }
