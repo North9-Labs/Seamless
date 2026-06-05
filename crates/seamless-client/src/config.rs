@@ -70,14 +70,16 @@ pub fn load() -> ClientConfig {
     load_from(None)
 }
 
-/// Save config to the default path.
+/// Save config to the default path (atomic: write to tmp then rename).
 pub fn save(cfg: &ClientConfig) -> Result<()> {
     let path = default_config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("create config dir")?;
     }
     let text = toml::to_string_pretty(cfg).context("serialize config")?;
-    std::fs::write(&path, text).context("write config")?;
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, &text).context("write config tmp")?;
+    std::fs::rename(&tmp, &path).context("atomic rename config")?;
     Ok(())
 }
 

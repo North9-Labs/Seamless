@@ -174,6 +174,12 @@ async fn main() -> Result<()> {
     let kind = args.cmd.to_kind(saved.subdomain)
         .ok_or_else(|| anyhow!("expected http or tcp subcommand"))?;
 
+    // Generate a single ephemeral identity for this process run.
+    // Reusing the same identity across reconnects gives the relay a consistent
+    // peer key — useful for future per-client allowlists and audit logs.
+    let identity = IdentityKeypair::generate();
+    let identity_bytes = identity.to_bytes();
+
     // Reconnect loop with exponential backoff.
     // Schedule: immediate, 1 s, 2 s, 4 s, 8 s, 16 s, 30 s (cap).
     let mut attempts = 0u32;
@@ -196,6 +202,9 @@ async fn main() -> Result<()> {
             }
         }
 
+        let session_identity = IdentityKeypair::from_bytes(&identity_bytes)
+            .expect("identity round-trips through bytes");
+
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 info!("ctrl-c — exiting");
@@ -208,6 +217,7 @@ async fn main() -> Result<()> {
                 token.clone(),
                 kind.clone(),
                 local_target.clone(),
+                session_identity,
             ) => {
                 match r {
                     Ok(()) => {
@@ -302,15 +312,15 @@ async fn run_session(
     token: Option<String>,
     kind: TunnelKind,
     local_target: String,
+    identity: IdentityKeypair,
 ) -> Result<()> {
-    let identity = IdentityKeypair::generate();
     let mut client = Client::bind("0.0.0.0:0".parse().expect("valid socket addr"), identity)
         .await
         .map_err(|e| anyhow!("seam bind: {e}"))?;
 
     info!("connecting to relay {} …", relay);
     let conn = client
-        .connect(relay, x25519_pk, kem_pk)
+        .connect(relay, x25519_pk, kem_pk, Default::default())
         .await
         .map_err(|e| anyhow!("seam connect: {e}"))?;
     info!("handshake complete");

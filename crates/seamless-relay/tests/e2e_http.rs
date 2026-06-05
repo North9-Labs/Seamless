@@ -88,7 +88,7 @@ async fn run_test() {
     let kem_pk = pk_from_bytes(&relay_kem_bytes).expect("kem pk decode");
 
     let conn = client
-        .connect(apex_addr, &relay_x25519, &kem_pk)
+        .connect(apex_addr, &relay_x25519, &kem_pk, Default::default())
         .await
         .expect("client connect");
     let mux = SeamMux::new(conn);

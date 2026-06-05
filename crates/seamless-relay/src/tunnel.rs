@@ -272,7 +272,7 @@ async fn serve_tcp(
     tcp_ports: TcpPortSet,
     base_domain: &str,
     requested_port: u16,
-    _metrics: Metrics,
+    metrics: Metrics,
     client_ip: &str,
 ) -> Result<()> {
     let (listener, port) = match requested_port {
@@ -309,8 +309,11 @@ async fn serve_tcp(
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let mux_for_listener = mux.clone();
+    let bi2 = bytes_in.clone();
+    let bo2 = bytes_out.clone();
+    let met2 = metrics.clone();
     let listener_task = tokio::spawn(async move {
-        run_tcp_listener(listener, mux_for_listener, shutdown_rx).await;
+        run_tcp_listener(listener, mux_for_listener, shutdown_rx, bi2, bo2, met2).await;
     });
 
     let mut ping_interval = tokio::time::interval(Duration::from_secs(25));
@@ -373,6 +376,9 @@ async fn run_tcp_listener(
     listener: TcpListener,
     mux: Arc<SeamMux>,
     mut shutdown: oneshot::Receiver<()>,
+    bytes_in: Arc<AtomicU64>,
+    bytes_out: Arc<AtomicU64>,
+    metrics: Metrics,
 ) {
     loop {
         tokio::select! {
@@ -383,9 +389,12 @@ async fn run_tcp_listener(
                     Err(e) => { warn!("tcp accept: {e}"); continue; }
                 };
                 let mux = mux.clone();
+                let bi = bytes_in.clone();
+                let bo = bytes_out.clone();
+                let met = metrics.clone();
                 tokio::spawn(async move {
                     let stream = mux.open_stream().await;
-                    if let Err(e) = forward_to_tunnel(tcp, stream, Vec::new(), peer).await {
+                    if let Err(e) = forward_to_tunnel(tcp, stream, Vec::new(), peer, bi, bo, met).await {
                         warn!("tcp tunnel forward from {peer}: {e:#}");
                     }
                 });
@@ -399,12 +408,24 @@ pub async fn forward_to_tunnel(
     mut apex: SeamStream,
     already_read: Vec<u8>,
     peer: SocketAddr,
+    bytes_in: Arc<AtomicU64>,
+    bytes_out: Arc<AtomicU64>,
+    metrics: Metrics,
 ) -> Result<()> {
+    use std::sync::atomic::Ordering;
     write_frame(&mut apex, &ControlFrame::NewConn { peer_addr: peer.to_string() }).await?;
     if !already_read.is_empty() {
+        let n = already_read.len() as u64;
         apex.write_all(&already_read).await?;
+        bytes_in.fetch_add(n, Ordering::Relaxed);
+        metrics.inc_bytes_in(n);
     }
-    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut apex).await;
+    if let Ok((n_in, n_out)) = tokio::io::copy_bidirectional(&mut tcp, &mut apex).await {
+        bytes_in.fetch_add(n_in, Ordering::Relaxed);
+        bytes_out.fetch_add(n_out, Ordering::Relaxed);
+        metrics.inc_bytes_in(n_in);
+        metrics.inc_bytes_out(n_out);
+    }
     Ok(())
 }
 
