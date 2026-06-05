@@ -18,18 +18,22 @@ mod admin;
 mod audit;
 mod cloudflare;
 mod denylist;
+mod geoip;
 mod ingress;
 mod logs;
 mod metrics;
 mod store;
+mod tcp_passthrough;
 mod tls;
 mod tunnel;
 
 use audit::AuditLog;
 use denylist::IpDenyList;
+use geoip::GeoipFilter;
 use logs::LogBuffer;
 use metrics::Metrics;
 use store::SharedStore;
+use tcp_passthrough::TcpPassthroughConfig;
 use tunnel::{AuthPolicy, CustomDomainMap, RateLimiter, ReservedSubdomains, SubdomainBlocklist, SubdomainPrefix, TcpPortSet, TunnelMap};
 
 // ── Stats history ring buffer ─────────────────────────────────────────────────
@@ -136,6 +140,8 @@ pub struct AppState {
     pub allow_custom_domains: bool,
     /// Explicit allowlist of custom domains allowed for registration.
     pub custom_domain_allowlist: Arc<std::collections::HashSet<String>>,
+    /// Geo-IP country filter (Feature 4). Applied to all inbound connections.
+    pub geoip: Arc<GeoipFilter>,
 }
 
 pub struct RelayPubkeys {
@@ -191,6 +197,9 @@ struct FileConfig {
     acme_production: Option<bool>,
     allow_custom_domains: Option<bool>,
     custom_domain_allowlist: Option<String>,
+    tcp_passthrough: Option<Vec<String>>,
+    geoip_db: Option<String>,
+    block_countries: Option<String>,
 }
 
 /// Find and load the TOML config file, returning the loaded config and the
@@ -451,6 +460,29 @@ struct Args {
     /// Comma-separated list of allowed custom domains for client registration.
     #[arg(long, env = "SEAMLESS_CUSTOM_DOMAIN_ALLOWLIST")]
     custom_domain_allowlist: Option<String>,
+
+    // ── Feature 3: TCP Passthrough ────────────────────────────────────────────
+
+    /// Forward raw TCP connections to a backend without HTTP parsing.
+    /// Format: <listen_port>:<backend_host>:<backend_port>
+    /// Can be repeated for multiple passthrough rules.
+    /// Example: --tcp-passthrough 5432:db.internal:5432 --tcp-passthrough 6379:redis.internal:6379
+    #[arg(long = "tcp-passthrough", value_name = "PORT:HOST:PORT", env = "SEAMLESS_TCP_PASSTHROUGH")]
+    tcp_passthrough: Vec<String>,
+
+    // ── Feature 4: Geo-IP Country Blocking ───────────────────────────────────
+
+    /// Path to a MaxMind GeoLite2-Country.mmdb file for geo-IP blocking.
+    /// Required when --block-countries is set. Without this flag, geo-blocking
+    /// is disabled and a warning is emitted.
+    #[arg(long, env = "SEAMLESS_GEOIP_DB")]
+    geoip_db: Option<String>,
+
+    /// Comma-separated ISO 3166-1 alpha-2 country codes to block.
+    /// Example: --block-countries CN,RU,KP,IR
+    /// Requires --geoip-db. Affects both TCP passthrough and HTTP ingress.
+    #[arg(long, env = "SEAMLESS_BLOCK_COUNTRIES")]
+    block_countries: Option<String>,
 }
 
 /// Merge file-config values into `args` for any field that still holds its
@@ -585,6 +617,15 @@ fn apply_file_config(args: &mut Args, cfg: &FileConfig) {
     }
     if args.custom_domain_allowlist.is_none() {
         if let Some(ref v) = cfg.custom_domain_allowlist { args.custom_domain_allowlist = Some(v.clone()); }
+    }
+    if args.tcp_passthrough.is_empty() {
+        if let Some(ref v) = cfg.tcp_passthrough { args.tcp_passthrough = v.clone(); }
+    }
+    if args.geoip_db.is_none() {
+        if let Some(ref v) = cfg.geoip_db { args.geoip_db = Some(v.clone()); }
+    }
+    if args.block_countries.is_none() {
+        if let Some(ref v) = cfg.block_countries { args.block_countries = Some(v.clone()); }
     }
 }
 
@@ -775,6 +816,31 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Parse TCP passthrough configs.
+    let tcp_passthrough_configs: Vec<TcpPassthroughConfig> = {
+        let mut cfgs = Vec::new();
+        for raw in &args.tcp_passthrough {
+            match TcpPassthroughConfig::parse(raw) {
+                Ok(cfg) => cfgs.push(cfg),
+                Err(e) => return Err(anyhow!("{e}")),
+            }
+        }
+        cfgs
+    };
+
+    // Build geo-IP filter.
+    let blocked_countries: Vec<String> = args.block_countries
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let geoip = Arc::new(
+        GeoipFilter::new(args.geoip_db.as_deref(), blocked_countries)
+            .context("failed to initialise geo-IP filter")?,
+    );
+
     // Log tunnel keepalive setting.
     if args.tunnel_keepalive > 0 {
         info!(
@@ -793,6 +859,7 @@ async fn main() -> Result<()> {
         custom_domains: custom_domains.clone(),
         allow_custom_domains: args.allow_custom_domains,
         custom_domain_allowlist: Arc::new(custom_domain_allowlist),
+        geoip: geoip.clone(),
         base_domain: Arc::new(args.base_domain.clone()),
         relay_pubkeys: Arc::new(RelayPubkeys {
             x25519: x25519_pk_hex,
@@ -867,6 +934,31 @@ async fn main() -> Result<()> {
             tracing::error!("admin server died: {e:#}");
         }
     });
+
+    // Spawn TCP passthrough listeners.
+    for cfg in tcp_passthrough_configs {
+        info!(
+            "tcp-passthrough: will forward port {} → {}:{}",
+            cfg.listen_port, cfg.backend_host, cfg.backend_port
+        );
+        let pt_denylist = ip_denylist.clone();
+        let pt_rate_limiter = state.rate_limiter.clone();
+        let pt_geoip = geoip.clone();
+        let pt_metrics = state.metrics.clone();
+        let pt_audit = audit_log.clone();
+        tokio::spawn(async move {
+            if let Err(e) = tcp_passthrough::run_tcp_passthrough(
+                cfg,
+                pt_denylist,
+                pt_rate_limiter,
+                pt_geoip,
+                pt_metrics,
+                pt_audit,
+            ).await {
+                tracing::error!("tcp-passthrough listener died: {e:#}");
+            }
+        });
+    }
 
     // Start HTTP ingress.
     let ingress_state = state.clone();

@@ -106,6 +106,8 @@ pub struct Metrics {
     pub request_duration: Histogram,
     /// Currently active WebSocket connections being tunnelled.
     pub ws_connections_active: Arc<AtomicU64>,
+    /// Total connections blocked by geo-IP country filter.
+    pub geoip_blocked_total: Arc<AtomicU64>,
 }
 
 pub fn new_metrics() -> Metrics {
@@ -164,6 +166,10 @@ impl Metrics {
 
     pub fn dec_ws_connections(&self) {
         self.ws_connections_active.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_geoip_blocked(&self) {
+        self.geoip_blocked_total.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record the duration of one proxied HTTP request (from first-byte-received to

@@ -787,6 +787,8 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let subdomain_invalid = s.metrics.subdomain_invalid_total.load(Ordering::Relaxed);
     let tunnel_per_ip_rejections = s.metrics.tunnel_per_ip_rejections_total.load(Ordering::Relaxed);
     let ws_connections_active = s.metrics.ws_connections_active.load(Ordering::Relaxed);
+    let geoip_blocked_total = s.metrics.geoip_blocked_total.load(Ordering::Relaxed);
+    let tcp_passthrough_active = crate::tcp_passthrough::TCP_PASSTHROUGH_CONNECTIONS_ACTIVE.load(Ordering::Relaxed);
 
     let uptime_secs = s.start_time.elapsed().as_secs();
     let version = env!("CARGO_PKG_VERSION");
@@ -831,6 +833,12 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
          # HELP seamless_ws_connections_active Currently active WebSocket connections being tunnelled\n\
          # TYPE seamless_ws_connections_active gauge\n\
          seamless_ws_connections_active {ws_connections_active}\n\
+         # HELP seamless_geoip_blocked_total Total connections blocked by geo-IP country filter\n\
+         # TYPE seamless_geoip_blocked_total counter\n\
+         seamless_geoip_blocked_total {geoip_blocked_total}\n\
+         # HELP seamless_tcp_passthrough_connections_active Currently active raw TCP passthrough connections\n\
+         # TYPE seamless_tcp_passthrough_connections_active gauge\n\
+         seamless_tcp_passthrough_connections_active {tcp_passthrough_active}\n\
          # HELP seamless_request_duration_seconds Proxied HTTP request duration from first byte received to last byte sent\n\
          # TYPE seamless_request_duration_seconds histogram\n\
          {latency_histogram}"

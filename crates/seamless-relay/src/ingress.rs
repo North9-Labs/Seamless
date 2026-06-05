@@ -120,6 +120,23 @@ async fn route_http<S>(mut stream: S, peer: SocketAddr, state: AppState, is_http
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    // ── Geo-IP block check (applied before any I/O) ───────────────────────────
+    let peer_ip = peer.ip();
+    if state.geoip.is_blocked(peer_ip) {
+        let country = state.geoip.country_code(peer_ip).unwrap_or_else(|| "unknown".to_string());
+        warn!(
+            event = "http.geo_blocked",
+            peer = %peer,
+            country = %country,
+            "http ingress: connection from {peer} blocked (country {country})"
+        );
+        crate::audit_event!(state.audit_log, "http.geo_blocked",
+            "peer"    => peer.to_string(),
+            "country" => &country
+        );
+        return Ok(());
+    }
+
     let mut head = Vec::with_capacity(4096);
     let mut buf = [0u8; 4096];
 
