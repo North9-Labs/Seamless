@@ -1874,7 +1874,7 @@ dependencies = [
 
 [[package]]
 name = "seamless-client"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "seamless-common"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "bincode",
  "bytes",
@@ -1904,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "seamless-relay"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anyhow",
  "axum",

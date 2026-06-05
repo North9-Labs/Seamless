@@ -415,11 +415,29 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let connections_total = s.metrics.connections_total.load(Ordering::Relaxed);
     let handshake_avg = s.metrics.handshake_avg_ms();
 
+    let uptime_secs = s.start_time.elapsed().as_secs();
+    let version = env!("CARGO_PKG_VERSION");
     let body = format!(
-        "seamless_tunnels_active {tunnels_active}\n\
+        "# HELP seamless_info Relay version info\n\
+         # TYPE seamless_info gauge\n\
+         seamless_info{{version=\"{version}\"}} 1\n\
+         # HELP seamless_uptime_seconds Seconds since relay start\n\
+         # TYPE seamless_uptime_seconds counter\n\
+         seamless_uptime_seconds {uptime_secs}\n\
+         # HELP seamless_tunnels_active Currently connected tunnel count\n\
+         # TYPE seamless_tunnels_active gauge\n\
+         seamless_tunnels_active {tunnels_active}\n\
+         # HELP seamless_bytes_in_total Bytes received from public internet\n\
+         # TYPE seamless_bytes_in_total counter\n\
          seamless_bytes_in_total {bytes_in}\n\
+         # HELP seamless_bytes_out_total Bytes sent to public internet\n\
+         # TYPE seamless_bytes_out_total counter\n\
          seamless_bytes_out_total {bytes_out}\n\
+         # HELP seamless_connections_total Total tunnel registrations since start\n\
+         # TYPE seamless_connections_total counter\n\
          seamless_connections_total {connections_total}\n\
+         # HELP seamless_handshake_duration_ms_avg Average Seam handshake duration\n\
+         # TYPE seamless_handshake_duration_ms_avg gauge\n\
          seamless_handshake_duration_ms_avg {handshake_avg:.1}\n"
     );
 

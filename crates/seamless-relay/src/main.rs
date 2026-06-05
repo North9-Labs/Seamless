@@ -51,6 +51,8 @@ pub struct AppState {
     pub auth_file: Arc<Option<PathBuf>>,
     /// Optional webhook URL to POST tunnel events to.
     pub webhook_url: Arc<Option<String>>,
+    /// Max simultaneous tunnels per client IP (0 = unlimited).
+    pub max_tunnels_per_ip: u32,
 }
 
 pub struct RelayPubkeys {
@@ -109,6 +111,10 @@ struct Args {
     /// Generate and use a self-signed TLS certificate for HTTPS.
     #[arg(long, default_value_t = false)]
     tls_self_signed: bool,
+
+    /// Maximum simultaneous tunnels per client IP (0 = unlimited).
+    #[arg(long, default_value_t = 10, env = "SEAMLESS_MAX_TUNNELS_PER_IP")]
+    max_tunnels_per_ip: u32,
 
     /// Optional URL to POST webhook events to (tunnel.connect / tunnel.disconnect).
     /// If set, the relay will POST JSON to this URL when tunnels register or disconnect.
@@ -193,6 +199,7 @@ async fn main() -> Result<()> {
         cipher: Arc::new(args.cipher.clone()),
         auth_file: Arc::new(args.auth_file.clone()),
         webhook_url: Arc::new(args.webhook_url.clone()),
+        max_tunnels_per_ip: args.max_tunnels_per_ip,
     };
 
     // Start admin UI server.
@@ -287,6 +294,7 @@ async fn main() -> Result<()> {
                         client_ip,
                         webhook_url: (*s.webhook_url).clone().map(Arc::new),
                         http_client: s.http_client.clone(),
+                        max_tunnels_per_ip: s.max_tunnels_per_ip,
                     };
                     if let Err(e) = tunnel::handle_client(mux, ctx).await {
                         warn!("client from {remote} ended: {e:#}");

@@ -32,6 +32,8 @@ pub struct ConnCtx {
     /// Optional URL to POST webhook events to.
     pub webhook_url: Option<Arc<String>>,
     pub http_client: reqwest::Client,
+    /// 0 = unlimited.
+    pub max_tunnels_per_ip: u32,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -168,7 +170,7 @@ impl WebhookCtx {
 pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
     let ConnCtx {
         tunnels, tcp_ports, base_domain, http_port, https_port, auth, metrics, client_ip,
-        webhook_url, http_client,
+        webhook_url, http_client, max_tunnels_per_ip,
     } = ctx;
     let webhook = WebhookCtx { url: webhook_url, client: http_client };
     let t0 = Instant::now();
@@ -214,6 +216,30 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     let handshake_ms = t0.elapsed().as_millis() as u64;
     metrics.record_handshake_ms(handshake_ms);
+
+    // Enforce per-IP tunnel limit.
+    if max_tunnels_per_ip > 0 {
+        let count = tunnels
+            .lock()
+            .await
+            .values()
+            .filter(|e| e.client_ip == client_ip)
+            .count() as u32;
+        if count >= max_tunnels_per_ip {
+            write_frame(
+                &mut control,
+                &ControlFrame::Error {
+                    code: 429,
+                    message: format!(
+                        "tunnel limit reached for your IP ({max_tunnels_per_ip} max)"
+                    ),
+                },
+            )
+            .await
+            .ok();
+            return Err(anyhow!("tunnel limit exceeded for {client_ip}"));
+        }
+    }
 
     match kind {
         TunnelKind::Http { subdomain } => {
