@@ -319,3 +319,58 @@ where
         Err(_) => (0, 0),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_header_exact() {
+        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        assert_eq!(parse_host_header(raw), Some("example.com".into()));
+    }
+
+    #[test]
+    fn host_header_case_insensitive() {
+        let cases = [
+            b"GET / HTTP/1.1\r\nHOST: a.b.c\r\n\r\n" as &[u8],
+            b"GET / HTTP/1.1\r\nhost: a.b.c\r\n\r\n",
+            b"GET / HTTP/1.1\r\nHoSt: a.b.c\r\n\r\n",
+        ];
+        for raw in &cases {
+            assert_eq!(parse_host_header(raw), Some("a.b.c".into()), "failed on {raw:?}");
+        }
+    }
+
+    #[test]
+    fn host_header_missing() {
+        let raw = b"GET / HTTP/1.1\r\nContent-Type: text/plain\r\n\r\n";
+        assert_eq!(parse_host_header(raw), None);
+    }
+
+    #[test]
+    fn extract_subdomain_basic() {
+        assert_eq!(extract_subdomain("foo.example.com", "example.com"), Some("foo".into()));
+        assert_eq!(extract_subdomain("foo.example.com:8080", "example.com"), Some("foo".into()));
+        assert_eq!(extract_subdomain("notexample.com", "example.com"), None);
+        assert_eq!(extract_subdomain("example.com", "example.com"), None);
+    }
+
+    #[test]
+    fn parse_upstream_addr_http() {
+        assert_eq!(parse_upstream_addr("http://localhost:3000").unwrap(), "localhost:3000");
+        assert_eq!(parse_upstream_addr("http://localhost").unwrap(), "localhost:80");
+    }
+
+    #[test]
+    fn parse_upstream_addr_https() {
+        assert_eq!(parse_upstream_addr("https://api.example.com").unwrap(), "api.example.com:443");
+        assert_eq!(parse_upstream_addr("https://api.example.com:8443").unwrap(), "api.example.com:8443");
+    }
+
+    #[test]
+    fn parse_upstream_addr_empty() {
+        assert!(parse_upstream_addr("http://").is_err());
+        assert!(parse_upstream_addr("").is_err());
+    }
+}

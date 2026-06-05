@@ -397,3 +397,52 @@ pub fn random_subdomain() -> String {
     let n: u16 = rng.gen_range(10..100);
     format!("{adj}-{noun}-{n}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy_with(tokens: &[&str]) -> AuthPolicy {
+        use std::collections::HashSet;
+        AuthPolicy {
+            allowed: Some(Arc::new(tokens.iter().map(|s| s.to_string()).collect::<HashSet<_>>())),
+        }
+    }
+
+    #[test]
+    fn auth_open_always_passes() {
+        let p = AuthPolicy::open();
+        assert!(p.check(None).is_ok());
+        assert!(p.check(Some("anything")).is_ok());
+    }
+
+    #[test]
+    fn auth_required_when_no_token_provided() {
+        let p = policy_with(&["secret"]);
+        assert!(matches!(p.check(None), Err(AuthError::Required)));
+    }
+
+    #[test]
+    fn auth_valid_token_accepted() {
+        let p = policy_with(&["mysecret"]);
+        assert!(p.check(Some("mysecret")).is_ok());
+    }
+
+    #[test]
+    fn auth_wrong_token_rejected() {
+        let p = policy_with(&["mysecret"]);
+        assert!(matches!(p.check(Some("wrong")), Err(AuthError::Invalid)));
+        assert!(matches!(p.check(Some("mysecre")), Err(AuthError::Invalid))); // one char short
+        assert!(matches!(p.check(Some("mysecrett")), Err(AuthError::Invalid))); // one char long
+        assert!(matches!(p.check(Some("")), Err(AuthError::Invalid)));
+    }
+
+    #[test]
+    fn auth_multi_token_any_accepted() {
+        let p = policy_with(&["token-a", "token-b", "token-c"]);
+        assert!(p.check(Some("token-a")).is_ok());
+        assert!(p.check(Some("token-b")).is_ok());
+        assert!(p.check(Some("token-c")).is_ok());
+        assert!(matches!(p.check(Some("token-d")), Err(AuthError::Invalid)));
+    }
+}
