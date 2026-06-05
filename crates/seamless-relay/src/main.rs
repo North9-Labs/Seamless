@@ -25,7 +25,7 @@ mod tunnel;
 use logs::LogBuffer;
 use metrics::Metrics;
 use store::SharedStore;
-use tunnel::{AuthPolicy, RateLimiter, ReservedSubdomains, TcpPortSet, TunnelMap};
+use tunnel::{AuthPolicy, RateLimiter, ReservedSubdomains, SubdomainPrefix, TcpPortSet, TunnelMap};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -64,6 +64,12 @@ pub struct AppState {
     pub config_file: Arc<Option<PathBuf>>,
     /// Subdomains blocked from registration (e.g., "admin", "www", "api").
     pub reserved_subdomains: ReservedSubdomains,
+    /// Optional prefix all client-requested subdomains must start with.
+    pub subdomain_prefix: SubdomainPrefix,
+    /// Number of random alphanumeric chars for auto-assigned subdomains (default 8, min 6).
+    pub subdomain_length: usize,
+    /// Max tunnel age in seconds (0 = unlimited). Background task expires old tunnels.
+    pub tunnel_max_age: u64,
 }
 
 pub struct RelayPubkeys {
@@ -104,6 +110,9 @@ struct FileConfig {
     admin_tls_key: Option<String>,
     admin_client_ca: Option<String>,
     reserved_subdomains: Option<String>,
+    subdomain_prefix: Option<String>,
+    subdomain_length: Option<usize>,
+    tunnel_max_age: Option<u64>,
 }
 
 /// Find and load the TOML config file, returning the loaded config and the
@@ -270,6 +279,25 @@ struct Args {
     /// Attempts to claim a reserved subdomain return HTTP 403.
     #[arg(long, env = "SEAMLESS_RESERVED_SUBDOMAINS")]
     reserved_subdomains: Option<String>,
+
+    /// Required prefix for all client-requested subdomains (e.g. "dev-" or "user-").
+    /// Clients that request a subdomain not starting with this prefix receive HTTP 403.
+    /// Does not affect auto-assigned (random) subdomains.
+    /// Useful for multi-team deployments where naming conventions are enforced.
+    #[arg(long, env = "SEAMLESS_SUBDOMAIN_PREFIX")]
+    subdomain_prefix: Option<String>,
+
+    /// Length (in characters) of randomly-assigned subdomains when the client does not
+    /// request a specific one. Default 8, minimum 6. Longer = harder to guess/enumerate.
+    #[arg(long, default_value_t = 8, env = "SEAMLESS_SUBDOMAIN_LENGTH")]
+    subdomain_length: usize,
+
+    /// Maximum tunnel lifetime in seconds (0 = unlimited, default).
+    /// A background task runs every 60 s and forcibly disconnects tunnels older than
+    /// this value, logging a `tunnel.expired` audit event. Prevents forgotten tunnels
+    /// from persisting indefinitely — recommended for shared government deployments.
+    #[arg(long, default_value_t = 0, env = "SEAMLESS_TUNNEL_MAX_AGE")]
+    tunnel_max_age: u64,
 }
 
 /// Merge file-config values into `args` for any field that still holds its
@@ -359,6 +387,15 @@ fn apply_file_config(args: &mut Args, cfg: &FileConfig) {
     }
     if args.reserved_subdomains.is_none() {
         if let Some(ref v) = cfg.reserved_subdomains { args.reserved_subdomains = Some(v.clone()); }
+    }
+    if args.subdomain_prefix.is_none() {
+        if let Some(ref v) = cfg.subdomain_prefix { args.subdomain_prefix = Some(v.clone()); }
+    }
+    if args.subdomain_length == 8 {
+        if let Some(v) = cfg.subdomain_length { args.subdomain_length = v; }
+    }
+    if args.tunnel_max_age == 0 {
+        if let Some(v) = cfg.tunnel_max_age { args.tunnel_max_age = v; }
     }
 }
 
@@ -474,6 +511,29 @@ async fn main() -> Result<()> {
         ReservedSubdomains::new(list)
     };
 
+    // Parse subdomain prefix requirement.
+    let subdomain_prefix = {
+        let p = args.subdomain_prefix.as_ref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+        if let Some(ref pstr) = p {
+            info!("subdomain prefix: all client-requested subdomains must start with '{pstr}'");
+        }
+        SubdomainPrefix::new(p)
+    };
+
+    // Clamp subdomain length to a safe minimum.
+    let subdomain_length = args.subdomain_length.max(6);
+    if subdomain_length != 8 {
+        info!("subdomain random length: {subdomain_length} chars");
+    }
+
+    // Tunnel max-age setting.
+    if args.tunnel_max_age > 0 {
+        info!(
+            "tunnel max-age: {}s — tunnels older than this will be expired automatically",
+            args.tunnel_max_age
+        );
+    }
+
     let state = AppState {
         store,
         store_path,
@@ -502,6 +562,9 @@ async fn main() -> Result<()> {
         admin_cidrs: Arc::new(admin_cidrs),
         config_file: Arc::new(config_file_path),
         reserved_subdomains,
+        subdomain_prefix,
+        subdomain_length,
+        tunnel_max_age: args.tunnel_max_age,
     };
 
     // Warn if admin port is publicly bound without an IP allowlist.
@@ -597,6 +660,48 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Tunnel expiry background task — runs every 60 s, disconnects tunnels older than max-age.
+    if args.tunnel_max_age > 0 {
+        let tunnels_for_expiry = tunnels.clone();
+        let max_age = args.tunnel_max_age;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await; // discard the immediate first tick
+            loop {
+                interval.tick().await;
+                let now = crate::store::unix_now();
+                let mut map = tunnels_for_expiry.lock().await;
+                let expired: Vec<_> = map
+                    .iter()
+                    .filter(|(_, e)| {
+                        let age = now.saturating_sub(e.connected_at) as u64;
+                        age >= max_age
+                    })
+                    .map(|(k, e)| (k.clone(), e.clone()))
+                    .collect();
+                for (key, entry) in expired {
+                    let age = now.saturating_sub(entry.connected_at) as u64;
+                    tracing::info!(
+                        event = "tunnel.expired",
+                        subdomain = %entry.subdomain,
+                        client_ip = %entry.client_ip,
+                        age_secs = age,
+                        max_age_secs = max_age,
+                        "tunnel '{}' from {} expired after {}s (max-age {}s)",
+                        entry.subdomain, entry.client_ip, age, max_age
+                    );
+                    let mut tx_guard = entry.disconnect_tx.lock().await;
+                    if let Some(tx) = tx_guard.take() {
+                        let _ = tx.send(());
+                    }
+                    drop(tx_guard);
+                    map.remove(&key);
+                }
+            }
+        });
+    }
+
     // SIGTERM → disconnect all active tunnels and shut down gracefully (Unix only).
     #[cfg(unix)]
     {
@@ -657,6 +762,8 @@ async fn main() -> Result<()> {
                         max_tunnels: s.max_tunnels,
                         rate_limiter: s.rate_limiter,
                         reserved_subdomains: s.reserved_subdomains,
+                        subdomain_prefix: s.subdomain_prefix,
+                        subdomain_length: s.subdomain_length,
                     };
                     if let Err(e) = tunnel::handle_client(mux, ctx).await {
                         warn!("client from {remote} ended: {e:#}");

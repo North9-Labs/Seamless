@@ -17,6 +17,36 @@ use tracing::{info, warn};
 
 use crate::metrics::Metrics;
 
+// ── Subdomain prefix enforcement ──────────────────────────────────────────────
+
+/// Optional prefix that all client-requested subdomains must start with.
+/// Clone is O(1) — the inner `Arc` is shared across all connection handlers.
+#[derive(Clone)]
+pub struct SubdomainPrefix {
+    prefix: Arc<Option<String>>,
+}
+
+impl SubdomainPrefix {
+    pub fn new(prefix: Option<String>) -> Self {
+        Self { prefix: Arc::new(prefix) }
+    }
+
+    /// Returns `Err` with a human-readable message if `sub` violates the prefix rule.
+    /// Returns `Ok(())` if no prefix is configured or the subdomain matches.
+    pub fn check(&self, sub: &str) -> Result<()> {
+        if let Some(ref p) = *self.prefix {
+            if !sub.to_lowercase().starts_with(p.as_str()) {
+                bail!("subdomain must start with '{p}' (prefix enforced by this relay)");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn required(&self) -> Option<&str> {
+        self.prefix.as_deref()
+    }
+}
+
 // ── Reserved-subdomain guard ──────────────────────────────────────────────────
 
 /// Immutable set of subdomain names that clients may not register.
@@ -100,6 +130,10 @@ pub struct ConnCtx {
     pub max_tunnels: u32,
     /// Subdomains blocked from registration.
     pub reserved_subdomains: ReservedSubdomains,
+    /// Optional prefix all client-requested subdomains must start with.
+    pub subdomain_prefix: SubdomainPrefix,
+    /// Number of random alphanumeric chars for auto-assigned subdomains (default 8, min 6).
+    pub subdomain_length: usize,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -254,7 +288,7 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
     let ConnCtx {
         tunnels, tcp_ports, base_domain, http_port, https_port, auth, metrics, client_ip,
         webhook_url, http_client, max_tunnels_per_ip, rate_limiter, max_tunnels,
-        reserved_subdomains,
+        reserved_subdomains, subdomain_prefix, subdomain_length,
     } = ctx;
     let webhook = WebhookCtx { url: webhook_url, client: http_client };
     let t0 = Instant::now();
@@ -391,7 +425,7 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     match kind {
         TunnelKind::Http { subdomain } => {
-            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook, &reserved_subdomains).await
+            serve_http(mux, control, tunnels, &base_domain, http_port, https_port, subdomain, metrics, &client_ip, webhook, &reserved_subdomains, &subdomain_prefix, subdomain_length).await
         }
         TunnelKind::Tcp { port } => {
             serve_tcp(mux, control, tunnels, tcp_ports, &base_domain, port, metrics, &client_ip, webhook).await
@@ -429,6 +463,8 @@ async fn serve_http(
     client_ip: &str,
     webhook: WebhookCtx,
     reserved: &ReservedSubdomains,
+    prefix: &SubdomainPrefix,
+    subdomain_length: usize,
 ) -> Result<()> {
     // Validate client-requested subdomains before falling back to random.
     if let Some(ref requested) = subdomain {
@@ -464,8 +500,29 @@ async fn serve_http(
             .ok();
             return Err(anyhow!("reserved subdomain '{requested}' blocked for {client_ip}"));
         }
+        // Enforce optional naming-convention prefix.
+        if let Err(e) = prefix.check(requested) {
+            metrics.inc_subdomain_invalid();
+            tracing::warn!(
+                event = "subdomain.prefix_violation",
+                client_ip = %client_ip,
+                subdomain = %requested,
+                reason = %e,
+                "prefix violation for subdomain '{requested}' from {client_ip}: {e}"
+            );
+            write_frame(
+                &mut control,
+                &ControlFrame::Error {
+                    code: 403,
+                    message: e.to_string(),
+                },
+            )
+            .await
+            .ok();
+            return Err(anyhow!("subdomain prefix violation for '{requested}': {e}"));
+        }
     }
-    let sub = subdomain.unwrap_or_else(random_subdomain);
+    let sub = subdomain.unwrap_or_else(|| random_subdomain_with_length(subdomain_length));
     let url = if let Some(port) = https_port {
         if port == 443 {
             format!("https://{sub}.{base_domain}")
@@ -780,28 +837,21 @@ pub async fn forward_to_tunnel(
     Ok(())
 }
 
-pub fn random_subdomain() -> String {
-    const ADJECTIVES: &[&str] = &[
-        "bold", "calm", "cold", "dark", "deep", "dim", "dry", "dull", "fair",
-        "fast", "flat", "free", "full", "glad", "gray", "hard", "high", "keen",
-        "kind", "late", "lean", "long", "loud", "low", "mild", "neat", "new",
-        "odd", "open", "pale", "pure", "quick", "rare", "rich", "safe", "sharp",
-        "slim", "slow", "soft", "still", "strong", "tall", "thin", "tidy",
-        "true", "vast", "warm", "wild", "wise",
-    ];
-    const NOUNS: &[&str] = &[
-        "arc", "ash", "bay", "beam", "bolt", "brook", "cave", "cliff", "cloud",
-        "crest", "dale", "dawn", "dew", "drift", "dusk", "dust", "fern", "field",
-        "flame", "flint", "fog", "ford", "frost", "gale", "gate", "glen", "grove",
-        "haze", "hill", "lake", "leaf", "mist", "moon", "moss", "oak", "peak",
-        "pine", "pond", "rain", "reef", "ridge", "river", "rock", "sand", "sea",
-        "sky", "snow", "star", "stone", "stream", "tide", "vale", "wave", "wind",
-    ];
+/// Generate a random subdomain using a random alphanumeric string of `length` chars.
+/// `length` must be >= 6 and defaults to 8. This replaces the old word-based scheme
+/// to make guessing infeasible in large shared deployments.
+pub fn random_subdomain_with_length(length: usize) -> String {
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut rng = rand::thread_rng();
-    let adj = ADJECTIVES[rng.gen_range(0..ADJECTIVES.len())];
-    let noun = NOUNS[rng.gen_range(0..NOUNS.len())];
-    let n: u16 = rng.gen_range(10..100);
-    format!("{adj}-{noun}-{n}")
+    let s: String = (0..length)
+        .map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
+        .collect();
+    s
+}
+
+#[allow(dead_code)]
+pub fn random_subdomain() -> String {
+    random_subdomain_with_length(8)
 }
 
 #[cfg(test)]
@@ -919,5 +969,61 @@ mod tests {
         assert!(!rs.is_reserved("admin"));
         assert!(!rs.is_reserved("www"));
         assert!(!rs.is_reserved("anything"));
+    }
+
+    // ── SubdomainPrefix tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn subdomain_prefix_none_allows_any() {
+        let p = SubdomainPrefix::new(None);
+        assert!(p.check("anything").is_ok());
+        assert!(p.check("dev-foo").is_ok());
+        assert!(p.check("user-bar").is_ok());
+    }
+
+    #[test]
+    fn subdomain_prefix_enforced_correctly() {
+        let p = SubdomainPrefix::new(Some("dev-".to_string()));
+        assert!(p.check("dev-myapp").is_ok());
+        assert!(p.check("dev-").is_ok());   // prefix alone is fine syntactically
+        assert!(p.check("DEV-myapp").is_ok()); // case-insensitive
+        assert!(p.check("prod-myapp").is_err());
+        assert!(p.check("myapp").is_err());
+        assert!(p.check("devmyapp").is_err()); // no separator
+    }
+
+    #[test]
+    fn subdomain_prefix_required_returns_correct_prefix() {
+        let p = SubdomainPrefix::new(Some("user-".to_string()));
+        assert_eq!(p.required(), Some("user-"));
+        let p2 = SubdomainPrefix::new(None);
+        assert_eq!(p2.required(), None);
+    }
+
+    // ── random_subdomain_with_length tests ────────────────────────────────────
+
+    #[test]
+    fn random_subdomain_length_correct() {
+        for len in [6usize, 8, 12, 16] {
+            let s = random_subdomain_with_length(len);
+            assert_eq!(s.len(), len, "expected length {len}, got {}", s.len());
+        }
+    }
+
+    #[test]
+    fn random_subdomain_only_valid_chars() {
+        for _ in 0..20 {
+            let s = random_subdomain_with_length(8);
+            assert!(
+                s.chars().all(|c| c.is_ascii_alphanumeric()),
+                "invalid char in subdomain: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn random_subdomain_default_is_eight_chars() {
+        let s = random_subdomain();
+        assert_eq!(s.len(), 8);
     }
 }
