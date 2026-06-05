@@ -9,6 +9,7 @@ use seam_protocol::api::Server;
 use seam_protocol::handshake::{IdentityKeypair, pk_to_bytes};
 use seam_protocol::tunnel::SeamMux;
 use clap::Parser;
+use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -59,6 +60,8 @@ pub struct AppState {
     pub rate_limiter: RateLimiter,
     /// Allowed CIDRs for admin UI access. Empty = allow all.
     pub admin_cidrs: Arc<Vec<(u32, u32)>>,
+    /// Path to the config file that was loaded at startup, if any.
+    pub config_file: Arc<Option<PathBuf>>,
 }
 
 pub struct RelayPubkeys {
@@ -66,9 +69,96 @@ pub struct RelayPubkeys {
     pub kem: String,
 }
 
+// ── Config file ──────────────────────────────────────────────────────────────
+
+/// Optional TOML config file. All fields map 1-to-1 with CLI flags.
+/// CLI flags always override config file values.
+/// Searched in order:
+///   1. Path from `--config` CLI flag
+///   2. ~/.config/seamless/relay.toml
+///   3. /etc/seamless/relay.toml
+#[derive(Debug, Default, Deserialize)]
+struct FileConfig {
+    seam_addr: Option<String>,
+    http_addr: Option<String>,
+    admin_addr: Option<String>,
+    base_domain: Option<String>,
+    auth_file: Option<PathBuf>,
+    store: Option<String>,
+    log_level: Option<String>,
+    log_format: Option<String>,
+    admin_token: Option<String>,
+    https_addr: Option<String>,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    tls_self_signed: Option<bool>,
+    max_tunnels_per_ip: Option<u32>,
+    webhook_url: Option<String>,
+    cipher: Option<String>,
+    rate_limit: Option<u32>,
+    max_tunnels: Option<u32>,
+    admin_allow_cidr: Option<String>,
+}
+
+/// Find and load the TOML config file, returning the loaded config and the
+/// path that was actually used (if any).
+/// Returns an empty/default config if no file is found.
+fn load_file_config(explicit_path: Option<&PathBuf>) -> (FileConfig, Option<PathBuf>) {
+    // 1. Explicit --config flag takes priority.
+    if let Some(p) = explicit_path {
+        match std::fs::read_to_string(p) {
+            Ok(text) => match toml::from_str::<FileConfig>(&text) {
+                Ok(cfg) => {
+                    eprintln!("seamless: loaded config from {}", p.display());
+                    return (cfg, Some(p.clone()));
+                }
+                Err(e) => {
+                    eprintln!("seamless: error parsing config {}: {e}", p.display());
+                    return (FileConfig::default(), None);
+                }
+            },
+            Err(e) => {
+                eprintln!("seamless: cannot read config {}: {e}", p.display());
+                return (FileConfig::default(), None);
+            }
+        }
+    }
+
+    // 2. ~/.config/seamless/relay.toml
+    if let Some(home) = std::env::var_os("HOME") {
+        let p = PathBuf::from(home).join(".config/seamless/relay.toml");
+        if p.exists() {
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                if let Ok(cfg) = toml::from_str::<FileConfig>(&text) {
+                    eprintln!("seamless: loaded config from {}", p.display());
+                    return (cfg, Some(p));
+                }
+            }
+        }
+    }
+
+    // 3. /etc/seamless/relay.toml
+    let etc = PathBuf::from("/etc/seamless/relay.toml");
+    if etc.exists() {
+        if let Ok(text) = std::fs::read_to_string(&etc) {
+            if let Ok(cfg) = toml::from_str::<FileConfig>(&text) {
+                eprintln!("seamless: loaded config from {}", etc.display());
+                return (cfg, Some(etc));
+            }
+        }
+    }
+
+    (FileConfig::default(), None)
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "seamless-relay", about = "Seamless — PQ reverse tunnel relay")]
 struct Args {
+    /// Path to a TOML config file. CLI flags override config file values.
+    /// If not set, looks for ~/.config/seamless/relay.toml then /etc/seamless/relay.toml.
+    #[arg(long, env = "SEAMLESS_CONFIG")]
+    config: Option<PathBuf>,
+
     /// UDP address for Seam connections from tunnel clients.
     #[arg(long, default_value = "0.0.0.0:4443")]
     seam_addr: SocketAddr,
@@ -155,6 +245,84 @@ struct Args {
     admin_allow_cidr: Option<String>,
 }
 
+/// Merge file-config values into `args` for any field that still holds its
+/// compile-time default (i.e., was not explicitly supplied on the CLI).
+///
+/// For optional fields (`Option<T>`), we set from the file if `None`.
+/// For required fields we compare against the compile-time default string and
+/// replace if the file supplies something different — this lets operators set
+/// base_domain, ports, etc. in the config file without repeating them every
+/// time they start the relay.
+fn apply_file_config(args: &mut Args, cfg: &FileConfig) {
+    // Required fields with defaults — replace only when still at the hardcoded default.
+    if args.seam_addr == "0.0.0.0:4443".parse().unwrap() {
+        if let Some(ref v) = cfg.seam_addr {
+            if let Ok(a) = v.parse() { args.seam_addr = a; }
+        }
+    }
+    if args.http_addr == "0.0.0.0:8080".parse().unwrap() {
+        if let Some(ref v) = cfg.http_addr {
+            if let Ok(a) = v.parse() { args.http_addr = a; }
+        }
+    }
+    if args.admin_addr == "0.0.0.0:8088".parse().unwrap() {
+        if let Some(ref v) = cfg.admin_addr {
+            if let Ok(a) = v.parse() { args.admin_addr = a; }
+        }
+    }
+    if args.base_domain == "localhost" {
+        if let Some(ref v) = cfg.base_domain { args.base_domain = v.clone(); }
+    }
+    if args.store == "seamless-relay.json" {
+        if let Some(ref v) = cfg.store { args.store = v.clone(); }
+    }
+    if args.log_level == "info" {
+        if let Some(ref v) = cfg.log_level { args.log_level = v.clone(); }
+    }
+    if args.log_format == "text" {
+        if let Some(ref v) = cfg.log_format { args.log_format = v.clone(); }
+    }
+    if args.cipher == "chacha20poly1305" {
+        if let Some(ref v) = cfg.cipher { args.cipher = v.clone(); }
+    }
+    if args.max_tunnels_per_ip == 10 {
+        if let Some(v) = cfg.max_tunnels_per_ip { args.max_tunnels_per_ip = v; }
+    }
+    if args.rate_limit == 10 {
+        if let Some(v) = cfg.rate_limit { args.rate_limit = v; }
+    }
+    if args.max_tunnels == 1000 {
+        if let Some(v) = cfg.max_tunnels { args.max_tunnels = v; }
+    }
+    if !args.tls_self_signed {
+        if let Some(v) = cfg.tls_self_signed { args.tls_self_signed = v; }
+    }
+    // Optional fields — set from file if not already set by CLI/env.
+    if args.auth_file.is_none() {
+        if let Some(ref v) = cfg.auth_file { args.auth_file = Some(v.clone()); }
+    }
+    if args.admin_token.is_none() {
+        if let Some(ref v) = cfg.admin_token { args.admin_token = Some(v.clone()); }
+    }
+    if args.https_addr.is_none() {
+        if let Some(ref v) = cfg.https_addr {
+            if let Ok(a) = v.parse() { args.https_addr = Some(a); }
+        }
+    }
+    if args.tls_cert.is_none() {
+        if let Some(ref v) = cfg.tls_cert { args.tls_cert = Some(v.clone()); }
+    }
+    if args.tls_key.is_none() {
+        if let Some(ref v) = cfg.tls_key { args.tls_key = Some(v.clone()); }
+    }
+    if args.webhook_url.is_none() {
+        if let Some(ref v) = cfg.webhook_url { args.webhook_url = Some(v.clone()); }
+    }
+    if args.admin_allow_cidr.is_none() {
+        if let Some(ref v) = cfg.admin_allow_cidr { args.admin_allow_cidr = Some(v.clone()); }
+    }
+}
+
 // ── CIDR helpers ──────────────────────────────────────────────────────────────
 
 /// Parse a CIDR string like "10.0.0.0/8" into a (network, mask) pair of u32.
@@ -190,7 +358,11 @@ async fn main() -> Result<()> {
     // Install ring as the default rustls crypto provider before any TLS code runs.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    // Load config file and merge into args (CLI flags take priority over file values).
+    let (file_cfg, config_file_path) = load_file_config(args.config.as_ref());
+    apply_file_config(&mut args, &file_cfg);
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| format!("{},seamless_relay=debug", args.log_level).into());
@@ -270,6 +442,7 @@ async fn main() -> Result<()> {
         max_tunnels: args.max_tunnels,
         rate_limiter: RateLimiter::new(args.rate_limit, Duration::from_secs(60)),
         admin_cidrs: Arc::new(admin_cidrs),
+        config_file: Arc::new(config_file_path),
     };
 
     // Warn if admin port is publicly bound without an IP allowlist.

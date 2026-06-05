@@ -440,6 +440,7 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let rate_limit_hits = s.metrics.rate_limit_hits_total.load(Ordering::Relaxed);
     let tunnel_cap_rejections = s.metrics.tunnel_cap_rejections_total.load(Ordering::Relaxed);
     let subdomain_invalid = s.metrics.subdomain_invalid_total.load(Ordering::Relaxed);
+    let tunnel_per_ip_rejections = s.metrics.tunnel_per_ip_rejections_total.load(Ordering::Relaxed);
 
     let uptime_secs = s.start_time.elapsed().as_secs();
     let version = env!("CARGO_PKG_VERSION");
@@ -476,7 +477,10 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
          seamless_tunnel_cap_rejections_total {tunnel_cap_rejections}\n\
          # HELP seamless_subdomain_invalid_total Total subdomain validation failures\n\
          # TYPE seamless_subdomain_invalid_total counter\n\
-         seamless_subdomain_invalid_total {subdomain_invalid}\n"
+         seamless_subdomain_invalid_total {subdomain_invalid}\n\
+         # HELP seamless_tunnel_per_ip_rejections_total Total connections rejected due to per-IP tunnel limit\n\
+         # TYPE seamless_tunnel_per_ip_rejections_total counter\n\
+         seamless_tunnel_per_ip_rejections_total {tunnel_per_ip_rejections}\n"
     );
 
     (
@@ -490,6 +494,7 @@ async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn get_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let auth_file = s.auth_file.as_ref().as_ref().map(|p| p.display().to_string());
+    let config_file = s.config_file.as_ref().as_ref().map(|p| p.display().to_string());
     let uptime_secs = s.start_time.elapsed().as_secs();
     Json(serde_json::json!({
         "seam_addr": s.seam_addr,
@@ -500,6 +505,7 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "https": s.https_port.is_some(),
         "auth_enabled": auth_file.is_some(),
         "auth_file": auth_file,
+        "config_file": config_file,
         "uptime_secs": uptime_secs,
         "version": env!("CARGO_PKG_VERSION"),
         "max_tunnels": s.max_tunnels,

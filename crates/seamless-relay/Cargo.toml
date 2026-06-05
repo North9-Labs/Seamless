@@ -33,6 +33,7 @@ rcgen = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 seamless-common = { path = "../seamless-common" }

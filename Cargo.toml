@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.22"
+version = "0.1.23"
 edition = "2021"
 license = "AGPL-3.0-only"
 
@@ -36,6 +36,7 @@ rcgen = "0.13"
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rustls-pemfile = "2"
+toml = "0.8"
 
 [profile.release]
 opt-level = 3

@@ -30,6 +30,8 @@ pub struct Metrics {
     pub tunnel_cap_rejections_total: Arc<AtomicU64>,
     /// Total subdomain validation failures.
     pub subdomain_invalid_total: Arc<AtomicU64>,
+    /// Total connections rejected because the per-IP tunnel limit was reached.
+    pub tunnel_per_ip_rejections_total: Arc<AtomicU64>,
 }
 
 pub fn new_metrics() -> Metrics {
@@ -76,5 +78,9 @@ impl Metrics {
 
     pub fn inc_subdomain_invalid(&self) {
         self.subdomain_invalid_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_tunnel_per_ip_rejections(&self) {
+        self.tunnel_per_ip_rejections_total.fetch_add(1, Ordering::Relaxed);
     }
 }

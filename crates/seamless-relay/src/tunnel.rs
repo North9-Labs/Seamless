@@ -299,6 +299,7 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
             .filter(|e| e.client_ip == client_ip)
             .count() as u32;
         if count >= max_tunnels_per_ip {
+            metrics.inc_tunnel_per_ip_rejections();
             tracing::warn!(
                 event = "tunnel.limit_per_ip",
                 client_ip = %client_ip,
