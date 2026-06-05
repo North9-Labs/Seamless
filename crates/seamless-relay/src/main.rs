@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use seam_protocol::api::Server;
 use seam_protocol::handshake::{IdentityKeypair, pk_to_bytes};
 use seam_protocol::tunnel::SeamMux;
@@ -15,11 +16,13 @@ mod admin;
 mod cloudflare;
 mod ingress;
 mod logs;
+mod metrics;
 mod store;
 mod tls;
 mod tunnel;
 
 use logs::LogBuffer;
+use metrics::Metrics;
 use store::SharedStore;
 use tunnel::{AuthPolicy, TcpPortSet, TunnelMap};
 
@@ -36,6 +39,10 @@ pub struct AppState {
     pub auth: AuthPolicy,
     pub http_client: reqwest::Client,
     pub log_buffer: LogBuffer,
+    pub metrics: Metrics,
+    pub start_time: Arc<Instant>,
+    /// Optional Bearer token protecting admin-only endpoints.
+    pub admin_token: Arc<Option<String>>,
 }
 
 pub struct RelayPubkeys {
@@ -73,6 +80,11 @@ struct Args {
     /// Log level: error, warn, info, debug, trace (overrides RUST_LOG).
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Bearer token required for admin-only endpoints (DELETE/pause/resume tunnels).
+    /// If not set, admin management endpoints are open to anyone who can reach the admin port.
+    #[arg(long, env = "SEAMLESS_ADMIN_TOKEN")]
+    admin_token: Option<String>,
 
     /// TCP address for public HTTPS ingress (requires --tls-cert/--tls-key or --tls-self-signed).
     #[arg(long)]
@@ -152,6 +164,9 @@ async fn main() -> Result<()> {
         auth,
         http_client: reqwest::Client::new(),
         log_buffer: logs::new_buffer(),
+        metrics: metrics::new_metrics(),
+        start_time: Arc::new(Instant::now()),
+        admin_token: Arc::new(args.admin_token),
     };
 
     // Start admin UI server.
@@ -174,12 +189,14 @@ async fn main() -> Result<()> {
     if let Some(https_addr) = args.https_addr {
         let acceptor = if args.tls_self_signed {
             tls::self_signed_acceptor(&[&args.base_domain])
-                .expect("failed to generate self-signed TLS cert")
+                .context("failed to generate self-signed TLS cert")?
         } else if let (Some(cert), Some(key)) = (&args.tls_cert, &args.tls_key) {
             tls::acceptor_from_files(cert, key)
-                .expect("failed to load TLS cert/key")
+                .with_context(|| format!("failed to load TLS cert from '{cert}' / key from '{key}'"))?
         } else {
-            panic!("--https-addr requires --tls-cert + --tls-key or --tls-self-signed");
+            return Err(anyhow!(
+                "--https-addr requires either --tls-self-signed or both --tls-cert and --tls-key"
+            ));
         };
         info!("tls: starting https ingress on {https_addr}");
         let https_state = state.clone();
@@ -209,6 +226,7 @@ async fn main() -> Result<()> {
                 (*s.base_domain).clone(),
                 s.http_port,
                 s.auth,
+                s.metrics,
             )
             .await
             {

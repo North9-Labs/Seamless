@@ -1,9 +1,11 @@
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 
 use anyhow::{anyhow, Result};
 use seamless_common::{write_frame, ControlFrame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::Duration;
 use tokio_rustls::TlsAcceptor;
 use tracing::{info, warn};
 
@@ -60,24 +62,48 @@ where
 
     // Read until we have the full HTTP header block (ends with \r\n\r\n).
     // Cap at 64 KiB to guard against oversized headers.
-    loop {
-        let n = stream.read(&mut buf).await?;
-        if n == 0 {
-            return Ok(());
+    // Idle timeout: if no bytes arrive within 30 s, close without response.
+    let read_result = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let n = stream.read(&mut buf).await?;
+            if n == 0 {
+                return Ok::<bool, std::io::Error>(false); // EOF before headers complete
+            }
+            head.extend_from_slice(&buf[..n]);
+            if head.windows(4).any(|w| w == b"\r\n\r\n") {
+                return Ok(true);
+            }
+            if head.len() > 64 * 1024 {
+                return Ok(false); // oversized
+            }
         }
-        head.extend_from_slice(&buf[..n]);
-        if head.windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
-        }
-        if head.len() > 64 * 1024 {
+    })
+    .await;
+
+    match read_result {
+        Err(_elapsed) => return Ok(()), // idle timeout — silently drop
+        Ok(Err(e)) => return Err(e.into()),
+        Ok(Ok(false)) if head.len() > 64 * 1024 => {
             let resp = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            stream.write_all(resp.as_bytes()).await.ok();
+            if let Err(e) = stream.write_all(resp.as_bytes()).await {
+                warn!("431 write failed for {peer}: {e}");
+            }
             return Ok(());
         }
+        Ok(Ok(false)) => return Ok(()), // EOF
+        Ok(Ok(true)) => {} // full headers received
     }
 
-    let host = parse_host_header(&head)
-        .ok_or_else(|| anyhow!("no Host header in {} bytes of request", head.len()))?;
+    let host = match parse_host_header(&head) {
+        Some(h) => h,
+        None => {
+            let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 25\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nmissing Host: header\n";
+            if let Err(e) = stream.write_all(resp.as_bytes()).await {
+                warn!("400 write failed for {peer}: {e}");
+            }
+            return Ok(());
+        }
+    };
     let (method, path) = parse_request_line(&head);
 
     // 1. Check proxy routes (static upstreams).
@@ -92,10 +118,63 @@ where
     };
 
     if let Some(url) = upstream_url {
-        let addr = parse_upstream_addr(&url)?;
-        let mut upstream = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| anyhow!("upstream {addr}: {e}"))?;
+        let addr = match parse_upstream_addr(&url) {
+            Ok(a) => a,
+            Err(e) => {
+                warn!("bad upstream URL '{url}': {e}");
+                let body = format!("seamless: misconfigured upstream for '{host}'\n");
+                let resp = format!(
+                    "HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                stream.write_all(resp.as_bytes()).await.ok();
+                return Ok(());
+            }
+        };
+        let upstream_result = tokio::time::timeout(
+            Duration::from_secs(10),
+            TcpStream::connect(&addr),
+        )
+        .await;
+        let mut upstream = match upstream_result {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                warn!("upstream {addr} unreachable: {e}");
+                logs::push(&state.log_buffer, LogEntry {
+                    ts: unix_now(),
+                    method,
+                    path,
+                    host,
+                    routed_to: format!("proxy:{url}"),
+                    status: 502,
+                }).await;
+                let body = format!("seamless: upstream '{addr}' unreachable\n");
+                let resp = format!(
+                    "HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                stream.write_all(resp.as_bytes()).await.ok();
+                return Ok(());
+            }
+            Err(_timeout) => {
+                warn!("upstream {addr} connect timed out");
+                logs::push(&state.log_buffer, LogEntry {
+                    ts: unix_now(),
+                    method,
+                    path,
+                    host,
+                    routed_to: format!("proxy:{url}"),
+                    status: 504,
+                }).await;
+                let body = format!("seamless: upstream '{addr}' timed out\n");
+                let resp = format!(
+                    "HTTP/1.1 504 Gateway Timeout\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                stream.write_all(resp.as_bytes()).await.ok();
+                return Ok(());
+            }
+        };
         upstream.write_all(&head).await?;
         logs::push(&state.log_buffer, LogEntry {
             ts: unix_now(),
@@ -103,7 +182,7 @@ where
             path,
             host,
             routed_to: format!("proxy:{url}"),
-            status: 0,
+            status: 0, // upstream status comes back in the response stream; recorded as 0 = connected
         }).await;
         tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
         return Ok(());
@@ -112,11 +191,26 @@ where
     // 2. Check tunnel registry (Seam-backed subdomains).
     let sub = extract_subdomain(&host, &state.base_domain);
     if let Some(sub) = sub {
-        let mux = {
+        let entry = {
             let t = state.tunnels.lock().await;
             t.get(&sub).cloned()
         };
-        if let Some(mux) = mux {
+        if let Some(entry) = entry {
+            // If the tunnel is paused, return 503.
+            if entry.paused.load(Ordering::Relaxed) {
+                let body = format!("seamless: tunnel '{sub}' is paused\n");
+                let resp = format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                if let Err(e) = stream.write_all(resp.as_bytes()).await {
+                    warn!("503 write failed for {peer}: {e}");
+                }
+                return Ok(());
+            }
+
+            state.metrics.inc_connections();
             logs::push(&state.log_buffer, LogEntry {
                 ts: unix_now(),
                 method,
@@ -125,12 +219,19 @@ where
                 routed_to: format!("tunnel:{sub}"),
                 status: 0,
             }).await;
-            let mut apex = mux.open_stream().await;
+            let mut apex = entry.mux.open_stream().await;
             write_frame(&mut apex, &ControlFrame::NewConn { peer_addr: peer.to_string() }).await?;
             if !head.is_empty() {
+                let n = head.len() as u64;
                 apex.write_all(&head).await?;
+                entry.bytes_in.fetch_add(n, Ordering::Relaxed);
+                state.metrics.inc_bytes_in(n);
             }
-            let _ = tokio::io::copy_bidirectional(&mut stream, &mut apex).await;
+            let (n_in, n_out) = copy_bidirectional_counted(&mut stream, &mut apex).await;
+            entry.bytes_in.fetch_add(n_in, Ordering::Relaxed);
+            entry.bytes_out.fetch_add(n_out, Ordering::Relaxed);
+            state.metrics.inc_bytes_in(n_in);
+            state.metrics.inc_bytes_out(n_out);
             return Ok(());
         }
     }
@@ -150,7 +251,9 @@ where
         body.len(),
         body
     );
-    stream.write_all(resp.as_bytes()).await.ok();
+    if let Err(e) = stream.write_all(resp.as_bytes()).await {
+        warn!("502 write failed for {peer}: {e}");
+    }
     Ok(())
 }
 
@@ -191,10 +294,29 @@ pub fn parse_upstream_addr(url: &str) -> Result<String> {
         .trim_start_matches("https://")
         .trim_start_matches("http://");
     let host_port = stripped.split('/').next().unwrap_or(stripped);
+    // Warn if URL contains a path — it will be silently dropped (TCP-level proxy)
+    if stripped.contains('/') {
+        warn!("upstream URL '{url}' contains a path — only host:port is used; path is ignored");
+    }
+    if host_port.is_empty() {
+        return Err(anyhow!("empty host in upstream URL '{url}'"));
+    }
     if host_port.contains(':') {
         Ok(host_port.to_string())
     } else {
         let default_port = if url.starts_with("https://") { 443 } else { 80 };
         Ok(format!("{host_port}:{default_port}"))
+    }
+}
+
+/// Like `tokio::io::copy_bidirectional` but returns `(bytes_a_to_b, bytes_b_to_a)`.
+async fn copy_bidirectional_counted<A, B>(a: &mut A, b: &mut B) -> (u64, u64)
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    match tokio::io::copy_bidirectional(a, b).await {
+        Ok((a2b, b2a)) => (a2b, b2a),
+        Err(_) => (0, 0),
     }
 }

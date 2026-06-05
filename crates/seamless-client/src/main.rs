@@ -1,4 +1,8 @@
+// Copyright (c) 2025 North9 LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -14,9 +18,16 @@ use tracing::{info, warn};
 mod config;
 use config::ClientConfig;
 
+// ── CLI ───────────────────────────────────────────────────────────────────────
+
 #[derive(Parser, Debug)]
 #[command(name = "seamless", about = "Seamless — reverse tunnel client")]
 struct Args {
+    /// Path to a TOML config file.  Defaults to ~/.config/seamless/config.toml.
+    /// CLI flags always override values in the config file.
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+
     /// Relay UDP address (or set in config with `seamless config init`).
     #[arg(long)]
     relay: Option<String>,
@@ -51,7 +62,7 @@ enum Cmd {
     Http {
         /// Local port serving HTTP.
         port: u16,
-        /// Optional explicit subdomain to request.
+        /// Optional explicit subdomain to request (overrides config file `subdomain`).
         #[arg(long)]
         subdomain: Option<String>,
     },
@@ -86,6 +97,9 @@ enum ConfigAction {
         /// Default auth token.
         #[arg(long)]
         token: Option<String>,
+        /// Default subdomain (HTTP tunnels).
+        #[arg(long)]
+        subdomain: Option<String>,
     },
     /// Print the current configuration.
     Show,
@@ -94,10 +108,11 @@ enum ConfigAction {
 }
 
 impl Cmd {
-    fn to_kind(&self) -> Option<TunnelKind> {
+    fn to_kind(&self, saved_subdomain: Option<String>) -> Option<TunnelKind> {
         match self {
             Cmd::Http { subdomain, .. } => Some(TunnelKind::Http {
-                subdomain: subdomain.clone(),
+                // CLI --subdomain > config file subdomain
+                subdomain: subdomain.clone().or(saved_subdomain),
             }),
             Cmd::Tcp { remote_port, .. } => Some(TunnelKind::Tcp { port: *remote_port }),
             Cmd::Config { .. } => None,
@@ -112,11 +127,13 @@ impl Cmd {
     }
 }
 
+// ── Main ──────────────────────────────────────────────────────────────────────
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Handle config subcommand before any network setup
+    // Handle config subcommand before any network setup.
     if let Cmd::Config { action } = &args.cmd {
         return handle_config(action);
     }
@@ -129,8 +146,8 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    // Load saved config as fallback for connection flags
-    let saved = config::load();
+    // Load config file: --config path overrides default location.
+    let saved = config::load_from(args.config.as_ref());
 
     let relay_str = args
         .relay
@@ -152,13 +169,33 @@ async fn main() -> Result<()> {
     let x25519_pk = parse_x25519(&x25519_str)?;
     let kem_pk = parse_kem(&kem_str)?;
 
-    let local_target = args.cmd.local_target().unwrap();
-    let kind = args.cmd.to_kind().unwrap();
+    let local_target = args.cmd.local_target()
+        .ok_or_else(|| anyhow!("expected http or tcp subcommand"))?;
+    let kind = args.cmd.to_kind(saved.subdomain)
+        .ok_or_else(|| anyhow!("expected http or tcp subcommand"))?;
 
-    let mut backoff = Duration::from_secs(1);
+    // Reconnect loop with exponential backoff.
+    // Schedule: immediate, 1 s, 2 s, 4 s, 8 s, 16 s, 30 s (cap).
     let mut attempts = 0u32;
+    let mut backoff: Option<Duration> = None; // None = no sleep before first attempt
 
     loop {
+        // Sleep before retry (skip on the very first attempt).
+        if let Some(delay) = backoff {
+            warn!(
+                delay_secs = delay.as_secs(),
+                attempt = attempts + 1,
+                "reconnecting in {delay:?}"
+            );
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    info!("ctrl-c — exiting");
+                    return Ok(());
+                }
+                _ = tokio::time::sleep(delay) => {}
+            }
+        }
+
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 info!("ctrl-c — exiting");
@@ -174,19 +211,37 @@ async fn main() -> Result<()> {
             ) => {
                 match r {
                     Ok(()) => {
-                        info!("session ended cleanly; reconnecting");
-                        backoff = Duration::from_secs(1);
+                        info!("session ended cleanly; reconnecting immediately");
+                        // Reset backoff on clean disconnect.
+                        attempts = 0;
+                        backoff = None;
                     }
                     Err(e) => {
+                        let msg = e.to_string();
+                        // Permanent errors (relay refusal, auth, version mismatch) should not
+                        // be retried — the operator needs to fix config.
+                        if msg.contains("PERMANENT") {
+                            return Err(e);
+                        }
                         attempts += 1;
-                        warn!("session error: {e:#}");
+                        warn!("session error (attempt {attempts}): {e:#}");
                         if args.max_retries != 0 && attempts >= args.max_retries {
                             bail!("giving up after {attempts} attempts");
                         }
-                        warn!("reconnecting in {:?} (attempt {})", backoff, attempts + 1);
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(30));
-                        continue;
+                        // Backoff schedule: immediate (None), 1 s, 2 s, 4 s, 8 s, 16 s, 30 s cap.
+                        backoff = Some(match attempts {
+                            1 => Duration::from_secs(0), // treat as immediate next iteration
+                            2 => Duration::from_secs(1),
+                            3 => Duration::from_secs(2),
+                            4 => Duration::from_secs(4),
+                            5 => Duration::from_secs(8),
+                            6 => Duration::from_secs(16),
+                            _ => Duration::from_secs(30),
+                        });
+                        // Zero-duration backoff = immediate retry (no sleep message).
+                        if backoff == Some(Duration::ZERO) {
+                            backoff = None;
+                        }
                     }
                 }
             }
@@ -194,34 +249,41 @@ async fn main() -> Result<()> {
     }
 }
 
+// ── Config subcommand ─────────────────────────────────────────────────────────
+
 fn handle_config(action: &ConfigAction) -> Result<()> {
     match action {
-        ConfigAction::Init { relay, x25519, kem, token } => {
+        ConfigAction::Init { relay, x25519, kem, token, subdomain } => {
             let mut cfg = config::load();
-            if relay.is_some() { cfg.relay = relay.clone(); }
-            if x25519.is_some() { cfg.x25519 = x25519.clone(); }
-            if kem.is_some() { cfg.kem = kem.clone(); }
-            if token.is_some() { cfg.token = token.clone(); }
+            if relay.is_some()     { cfg.relay     = relay.clone(); }
+            if x25519.is_some()    { cfg.x25519    = x25519.clone(); }
+            if kem.is_some()       { cfg.kem        = kem.clone(); }
+            if token.is_some()     { cfg.token      = token.clone(); }
+            if subdomain.is_some() { cfg.subdomain  = subdomain.clone(); }
             config::save(&cfg)?;
             println!("config saved → {}", config::path_display());
             println!();
-            if let Some(r) = &cfg.relay    { println!("  relay  = {r}"); }
-            if let Some(k) = &cfg.x25519   { println!("  x25519 = {k}"); }
-            if cfg.kem.is_some()            { println!("  kem    = <{} bytes>", cfg.kem.as_deref().unwrap().len() / 2); }
-            if cfg.token.is_some()          { println!("  token  = <set>"); }
+            if let Some(r) = &cfg.relay     { println!("  relay     = {r}"); }
+            if let Some(k) = &cfg.x25519    { println!("  x25519    = {k}"); }
+            if cfg.kem.is_some()             { println!("  kem       = <{} bytes>", cfg.kem.as_deref().unwrap().len() / 2); }
+            if cfg.token.is_some()           { println!("  token     = <set>"); }
+            if let Some(s) = &cfg.subdomain  { println!("  subdomain = {s}"); }
         }
         ConfigAction::Show => {
             let cfg = config::load();
             println!("config: {}", config::path_display());
             println!();
-            println!("  relay  = {}", cfg.relay.as_deref().unwrap_or("<not set>"));
-            println!("  x25519 = {}", cfg.x25519.as_deref().unwrap_or("<not set>"));
-            println!("  kem    = {}", if cfg.kem.is_some() {
+            println!("  relay     = {}", cfg.relay.as_deref().unwrap_or("<not set>"));
+            println!("  x25519    = {}", cfg.x25519.as_deref().unwrap_or("<not set>"));
+            println!("  kem       = {}", if cfg.kem.is_some() {
                 format!("<{} bytes>", cfg.kem.as_deref().unwrap().len() / 2)
             } else {
                 "<not set>".into()
             });
-            println!("  token  = {}", if cfg.token.is_some() { "<set>" } else { "<not set>" });
+            println!("  token     = {}", if cfg.token.is_some() { "<set>" } else { "<not set>" });
+            println!("  subdomain = {}", cfg.subdomain.as_deref().unwrap_or("<not set>"));
+            println!("  local     = {}", cfg.local.as_deref().unwrap_or("<not set>"));
+            println!("  tls_verify = {}", cfg.tls_verify);
         }
         ConfigAction::Clear => {
             config::save(&ClientConfig::default())?;
@@ -230,6 +292,8 @@ fn handle_config(action: &ConfigAction) -> Result<()> {
     }
     Ok(())
 }
+
+// ── Session ───────────────────────────────────────────────────────────────────
 
 async fn run_session(
     relay: SocketAddr,
@@ -240,7 +304,7 @@ async fn run_session(
     local_target: String,
 ) -> Result<()> {
     let identity = IdentityKeypair::generate();
-    let mut client = Client::bind("0.0.0.0:0".parse().unwrap(), identity)
+    let mut client = Client::bind("0.0.0.0:0".parse().expect("valid socket addr"), identity)
         .await
         .map_err(|e| anyhow!("seam bind: {e}"))?;
 
@@ -277,12 +341,14 @@ async fn run_session(
             println!();
         }
         ControlFrame::Error { code, message } => {
-            bail!("relay refused: {code} {message}");
+            // Relay-level rejections are permanent — no retry makes them go away.
+            // Use a sentinel that the reconnect loop recognises.
+            bail!("PERMANENT relay refused: {code} {message}");
         }
         other => bail!("unexpected reply: {other:?}"),
     }
 
-    // Keepalive: send Ping every 25 seconds on idle control stream
+    // Keepalive: send Ping every 25 seconds on the idle control stream.
     let mut ping_interval = tokio::time::interval(Duration::from_secs(25));
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ping_interval.tick().await; // discard first immediate tick
@@ -340,6 +406,8 @@ async fn handle_incoming(mut apex: SeamStream, local_target: String) -> Result<(
     let _ = tokio::io::copy_bidirectional(&mut local, &mut apex).await;
     Ok(())
 }
+
+// ── Key parsing ───────────────────────────────────────────────────────────────
 
 fn parse_x25519(s: &str) -> Result<[u8; 32]> {
     let bytes = hex::decode(s.trim()).context("x25519 not hex")?;

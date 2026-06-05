@@ -1,12 +1,15 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use subtle::ConstantTimeEq;
 
 use axum::{
     Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse},
-    routing::{delete, get, put},
+    routing::{delete, get, post, put},
     Json,
 };
 use serde::Deserialize;
@@ -14,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use tracing::info;
 
 use crate::cloudflare::{CfClient, CreateDnsRecord};
-use crate::store::{self, CfSettings, ProxyRoute};
+use crate::store::{self, unix_now, CfSettings, ProxyRoute};
 use crate::AppState;
 
 const UI_HTML: &str = include_str!("admin.html");
@@ -25,12 +28,21 @@ pub async fn start_admin(addr: SocketAddr, state: AppState) -> anyhow::Result<()
     let shared = Arc::new(state);
     let app = Router::new()
         .route("/", get(serve_ui))
+        // Health / readiness / metrics (public — used by load balancers)
+        .route("/health", get(health_check))
+        .route("/ready", get(ready_check))
+        .route("/metrics", get(metrics_handler))
         // Proxy routes
         .route("/api/routes", get(list_routes).post(create_route))
         .route("/api/routes/{id}", put(update_route).delete(delete_route))
-        // Seamless tunnels (read-only)
+        // Seamless tunnels — read-only list
         .route("/api/tunnels", get(list_seamless_tunnels))
-        // Logs + health
+        // Seamless tunnels — admin management (protected by Bearer token)
+        .route("/admin/tunnels/{id}", delete(admin_disconnect_tunnel))
+        .route("/admin/tunnels/{id}/stats", get(admin_tunnel_stats))
+        .route("/admin/tunnels/{id}/pause", post(admin_pause_tunnel))
+        .route("/admin/tunnels/{id}/resume", post(admin_resume_tunnel))
+        // Logs + route health
         .route("/api/logs", get(get_logs))
         .route("/api/routes/health", get(health_routes))
         // Relay status
@@ -73,6 +85,20 @@ fn err(msg: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
     )
 }
 
+fn bad_request(msg: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": msg.to_string() })),
+    )
+}
+
+fn credentials_required() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(serde_json::json!({ "error": "credentials not configured — set CF API token and account ID in Settings" })),
+    )
+}
+
 fn not_found() -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::NOT_FOUND,
@@ -111,11 +137,7 @@ async fn create_route(
     let domain = req.domain.trim().to_lowercase();
     let upstream_url = req.upstream_url.trim().to_string();
     if domain.is_empty() || upstream_url.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "domain and upstream_url required"})),
-        )
-            .into_response();
+        return bad_request("domain and upstream_url required").into_response();
     }
     let route = ProxyRoute {
         id: uuid::Uuid::new_v4().to_string(),
@@ -181,16 +203,18 @@ async fn delete_route(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     }
 }
 
-// ── Seamless Tunnels ──────────────────────────────────────────────────────────
+// ── Seamless Tunnels (read-only list) ─────────────────────────────────────────
 
 async fn list_seamless_tunnels(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let http: Vec<_> = {
         let t = s.tunnels.lock().await;
-        t.keys()
-            .map(|sub| {
+        t.values()
+            .map(|entry| {
                 serde_json::json!({
-                    "subdomain": sub,
-                    "url": format!("http://{}.{}:{}", sub, s.base_domain, s.http_port),
+                    "subdomain": entry.subdomain,
+                    "url": format!("http://{}.{}:{}", entry.subdomain, s.base_domain, s.http_port),
+                    "paused": entry.paused.load(Ordering::Relaxed),
+                    "connected_at": entry.connected_at,
                 })
             })
             .collect()
@@ -207,6 +231,183 @@ async fn list_seamless_tunnels(State(s): State<Arc<AppState>>) -> Json<serde_jso
             .collect()
     };
     Json(serde_json::json!({ "http": http, "tcp": tcp }))
+}
+
+// ── Admin tunnel management (protected by Bearer token) ───────────────────────
+
+/// Returns `Some(unauthorized_response)` if the admin token check fails.
+/// Comparison is constant-time to prevent timing-based token enumeration.
+fn check_admin_auth(
+    headers: &HeaderMap,
+    expected: &Option<String>,
+) -> Option<(StatusCode, Json<serde_json::Value>)> {
+    let Some(tok) = expected else {
+        return None; // No token configured — endpoint is open.
+    };
+    let provided = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let ok = match provided {
+        Some(t) => t.as_bytes().ct_eq(tok.as_bytes()).into(),
+        None => false,
+    };
+    if ok {
+        None
+    } else {
+        Some((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "error": "invalid or missing admin token",
+                "hint": "Authorization: Bearer <token>"
+            })),
+        ))
+    }
+}
+
+/// `DELETE /admin/tunnels/:id` — forcibly disconnect a tunnel.
+async fn admin_disconnect_tunnel(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    // Send disconnect signal; the tunnel task cleans itself up.
+    let mut tx_guard = entry.disconnect_tx.lock().await;
+    if let Some(tx) = tx_guard.take() {
+        let _ = tx.send(());
+        (StatusCode::NO_CONTENT, Json(serde_json::Value::Null)).into_response()
+    } else {
+        // Already disconnecting.
+        (StatusCode::NO_CONTENT, Json(serde_json::Value::Null)).into_response()
+    }
+}
+
+/// `GET /admin/tunnels/:id/stats` — bytes in/out, duration, client IP, subdomain.
+async fn admin_tunnel_stats(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    let now = unix_now();
+    Json(serde_json::json!({
+        "subdomain": entry.subdomain,
+        "client_ip": entry.client_ip,
+        "connected_at": entry.connected_at,
+        "duration_secs": now - entry.connected_at,
+        "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
+        "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
+        "paused": entry.paused.load(Ordering::Relaxed),
+    }))
+    .into_response()
+}
+
+/// `POST /admin/tunnels/:id/pause` — block new connections without disconnecting.
+async fn admin_pause_tunnel(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    entry.paused.store(true, Ordering::Relaxed);
+    tracing::info!("admin paused tunnel {id}");
+    (StatusCode::NO_CONTENT, Json(serde_json::Value::Null)).into_response()
+}
+
+/// `POST /admin/tunnels/:id/resume` — lift a pause.
+async fn admin_resume_tunnel(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
+    let entry = {
+        let t = s.tunnels.lock().await;
+        t.get(&id).cloned()
+    };
+    let Some(entry) = entry else {
+        return not_found().into_response();
+    };
+    entry.paused.store(false, Ordering::Relaxed);
+    tracing::info!("admin resumed tunnel {id}");
+    (StatusCode::NO_CONTENT, Json(serde_json::Value::Null)).into_response()
+}
+
+// ── Health / Ready / Metrics (public, used by load balancers) ─────────────────
+
+async fn health_check(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let tunnels = s.tunnels.lock().await.len();
+    let uptime_secs = s.start_time.elapsed().as_secs();
+    Json(serde_json::json!({
+        "status": "ok",
+        "tunnels": tunnels,
+        "uptime_secs": uptime_secs,
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
+async fn ready_check(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    // The relay is ready as long as the tunnels map is accessible.
+    let tunnels = s.tunnels.lock().await.len();
+    let uptime_secs = s.start_time.elapsed().as_secs();
+    Json(serde_json::json!({
+        "status": "ok",
+        "tunnels": tunnels,
+        "uptime_secs": uptime_secs,
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
+async fn metrics_handler(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    let tunnels_active = s.tunnels.lock().await.len() as u64;
+    let bytes_in = s.metrics.bytes_in.load(Ordering::Relaxed);
+    let bytes_out = s.metrics.bytes_out.load(Ordering::Relaxed);
+    let connections_total = s.metrics.connections_total.load(Ordering::Relaxed);
+    let handshake_avg = s.metrics.handshake_avg_ms();
+
+    let body = format!(
+        "seamless_tunnels_active {tunnels_active}\n\
+         seamless_bytes_in_total {bytes_in}\n\
+         seamless_bytes_out_total {bytes_out}\n\
+         seamless_connections_total {connections_total}\n\
+         seamless_handshake_duration_ms_avg {handshake_avg:.1}\n"
+    );
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        body,
+    )
 }
 
 // ── Status ────────────────────────────────────────────────────────────────────
@@ -321,7 +522,7 @@ async fn save_settings(
 
 async fn cf_list_tunnels(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let Some(cf) = cf_client(&s).await else {
-        return err("CF credentials not configured").into_response();
+        return credentials_required().into_response();
     };
     match cf.list_tunnels().await {
         Ok(tunnels) => Json(tunnels).into_response(),
@@ -339,7 +540,7 @@ async fn cf_create_tunnel(
     Json(req): Json<CreateTunnelReq>,
 ) -> impl IntoResponse {
     let Some(cf) = cf_client(&s).await else {
-        return err("CF credentials not configured").into_response();
+        return credentials_required().into_response();
     };
     match cf.create_tunnel(req.name.trim()).await {
         Ok(t) => (StatusCode::CREATED, Json(t)).into_response(),
@@ -352,7 +553,7 @@ async fn cf_delete_tunnel(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Some(cf) = cf_client(&s).await else {
-        return err("CF credentials not configured").into_response();
+        return credentials_required().into_response();
     };
     match cf.delete_tunnel(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -365,7 +566,7 @@ async fn cf_tunnel_token(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Some(cf) = cf_client(&s).await else {
-        return err("CF credentials not configured").into_response();
+        return credentials_required().into_response();
     };
     match cf.get_tunnel_token(&id).await {
         Ok(token) => Json(serde_json::json!({ "token": token })).into_response(),
@@ -377,7 +578,7 @@ async fn cf_tunnel_token(
 
 async fn cf_list_zones(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let Some(cf) = cf_client(&s).await else {
-        return err("CF credentials not configured").into_response();
+        return credentials_required().into_response();
     };
     match cf.list_zones().await {
         Ok(zones) => Json(zones).into_response(),
@@ -392,7 +593,7 @@ async fn cf_list_dns(
     Path(zone_id): Path<String>,
 ) -> impl IntoResponse {
     let Some(cf) = cf_client(&s).await else {
-        return err("CF credentials not configured").into_response();
+        return credentials_required().into_response();
     };
     match cf.list_dns_records(&zone_id).await {
         Ok(records) => Json(records).into_response(),
@@ -406,7 +607,7 @@ async fn cf_create_dns(
     Json(req): Json<CreateDnsRecord>,
 ) -> impl IntoResponse {
     let Some(cf) = cf_client(&s).await else {
-        return err("CF credentials not configured").into_response();
+        return credentials_required().into_response();
     };
     match cf.create_dns_record(&zone_id, &req).await {
         Ok(r) => (StatusCode::CREATED, Json(r)).into_response(),
@@ -420,7 +621,7 @@ async fn cf_update_dns(
     Json(req): Json<CreateDnsRecord>,
 ) -> impl IntoResponse {
     let Some(cf) = cf_client(&s).await else {
-        return err("CF credentials not configured").into_response();
+        return credentials_required().into_response();
     };
     match cf.update_dns_record(&zone_id, &record_id, &req).await {
         Ok(r) => Json(r).into_response(),
@@ -433,7 +634,7 @@ async fn cf_delete_dns(
     Path((zone_id, record_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(cf) = cf_client(&s).await else {
-        return err("CF credentials not configured").into_response();
+        return credentials_required().into_response();
     };
     match cf.delete_dns_record(&zone_id, &record_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),

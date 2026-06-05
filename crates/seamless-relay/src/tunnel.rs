@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use seamless_common::{read_frame, write_frame, ControlFrame, TunnelKind, PROTOCOL_VERSION};
@@ -13,8 +14,32 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex};
 use tracing::{info, warn};
 
-pub type TunnelMap = Arc<Mutex<HashMap<String, Arc<SeamMux>>>>;
+use crate::metrics::Metrics;
+
+// ── Public types ──────────────────────────────────────────────────────────────
+
+/// Per-tunnel state shared between the tunnel task and the admin API.
+pub struct TunnelEntry {
+    pub mux: Arc<SeamMux>,
+    pub subdomain: String,
+    /// UTC Unix timestamp (seconds) when the tunnel was registered.
+    pub connected_at: i64,
+    /// IP address of the Seam client.
+    pub client_ip: String,
+    /// Bytes forwarded from the public internet into this tunnel.
+    pub bytes_in: Arc<AtomicU64>,
+    /// Bytes forwarded out of this tunnel to the public internet.
+    pub bytes_out: Arc<AtomicU64>,
+    /// When `true`, new incoming connections are refused with 503.
+    pub paused: Arc<AtomicBool>,
+    /// Allows the admin API to forcibly disconnect this tunnel.
+    pub disconnect_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+pub type TunnelMap = Arc<Mutex<HashMap<String, Arc<TunnelEntry>>>>;
 pub type TcpPortSet = Arc<Mutex<HashSet<u16>>>;
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct AuthPolicy {
@@ -73,6 +98,8 @@ pub enum AuthError {
     Invalid,
 }
 
+// ── Entry point ───────────────────────────────────────────────────────────────
+
 pub async fn handle_client(
     mux: Arc<SeamMux>,
     tunnels: TunnelMap,
@@ -80,7 +107,10 @@ pub async fn handle_client(
     base_domain: String,
     http_port: u16,
     auth: AuthPolicy,
+    metrics: Metrics,
 ) -> Result<()> {
+    let t0 = Instant::now();
+
     let mut control = mux
         .accept_stream()
         .await
@@ -120,15 +150,20 @@ pub async fn handle_client(
         return Err(anyhow!("auth denied: {msg}"));
     }
 
+    let handshake_ms = t0.elapsed().as_millis() as u64;
+    metrics.record_handshake_ms(handshake_ms);
+
     match kind {
         TunnelKind::Http { subdomain } => {
-            serve_http(mux, control, tunnels, base_domain, http_port, subdomain).await
+            serve_http(mux, control, tunnels, base_domain, http_port, subdomain, metrics).await
         }
         TunnelKind::Tcp { port } => {
-            serve_tcp(mux, control, tcp_ports, base_domain, port).await
+            serve_tcp(mux, control, tcp_ports, base_domain, port, metrics).await
         }
     }
 }
+
+// ── HTTP tunnel ───────────────────────────────────────────────────────────────
 
 async fn serve_http(
     mux: Arc<SeamMux>,
@@ -137,6 +172,7 @@ async fn serve_http(
     base_domain: String,
     http_port: u16,
     subdomain: Option<String>,
+    _metrics: Metrics,
 ) -> Result<()> {
     let sub = subdomain.unwrap_or_else(random_subdomain);
     let url = if http_port == 80 {
@@ -144,6 +180,23 @@ async fn serve_http(
     } else {
         format!("http://{sub}.{base_domain}:{http_port}")
     };
+
+    let (disconnect_tx, disconnect_rx) = oneshot::channel::<()>();
+
+    let bytes_in = Arc::new(AtomicU64::new(0));
+    let bytes_out = Arc::new(AtomicU64::new(0));
+    let paused = Arc::new(AtomicBool::new(false));
+
+    let entry = Arc::new(TunnelEntry {
+        mux: mux.clone(),
+        subdomain: sub.clone(),
+        connected_at: crate::store::unix_now(),
+        client_ip: String::new(), // Seam connections don't expose a meaningful client IP here
+        bytes_in: bytes_in.clone(),
+        bytes_out: bytes_out.clone(),
+        paused: paused.clone(),
+        disconnect_tx: Arc::new(Mutex::new(Some(disconnect_tx))),
+    });
 
     {
         let mut t = tunnels.lock().await;
@@ -159,7 +212,7 @@ async fn serve_http(
             .ok();
             return Err(anyhow!("subdomain taken"));
         }
-        t.insert(sub.clone(), mux.clone());
+        t.insert(sub.clone(), entry);
     }
 
     write_frame(&mut control, &ControlFrame::Registered { public_url: url.clone() }).await?;
@@ -170,8 +223,13 @@ async fn serve_http(
     ping_interval.tick().await; // discard first immediate tick
 
     let mut drain = [0u8; 256];
+    let mut disconnect_rx = disconnect_rx;
     loop {
         tokio::select! {
+            _ = &mut disconnect_rx => {
+                info!("admin forcibly disconnected http tunnel for subdomain {sub}");
+                break;
+            }
             _ = ping_interval.tick() => {
                 if write_frame(&mut control, &ControlFrame::Ping).await.is_err() {
                     break;
@@ -191,12 +249,15 @@ async fn serve_http(
     Ok(())
 }
 
+// ── TCP tunnel ────────────────────────────────────────────────────────────────
+
 async fn serve_tcp(
     mux: Arc<SeamMux>,
     mut control: SeamStream,
     tcp_ports: TcpPortSet,
     base_domain: String,
     requested_port: u16,
+    _metrics: Metrics,
 ) -> Result<()> {
     let (listener, port) = match requested_port {
         0 => bind_random_port(&tcp_ports).await?,
