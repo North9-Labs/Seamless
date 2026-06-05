@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -17,6 +17,45 @@ use tracing::{info, warn};
 
 use crate::metrics::Metrics;
 
+// ── Sliding-window rate limiter ───────────────────────────────────────────────
+
+/// Sliding-window rate limiter: tracks connection timestamps per IP.
+#[derive(Clone)]
+pub struct RateLimiter {
+    inner: Arc<tokio::sync::Mutex<HashMap<String, VecDeque<Instant>>>>,
+    /// Max connections allowed in the window.
+    max: u32,
+    /// Window duration.
+    window: Duration,
+}
+
+impl RateLimiter {
+    pub fn new(max: u32, window: Duration) -> Self {
+        Self {
+            inner: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            max,
+            window,
+        }
+    }
+
+    /// Returns true if the IP is allowed, false if rate-limited.
+    pub async fn check_and_record(&self, ip: &str) -> bool {
+        if self.max == 0 {
+            return true; // 0 = unlimited
+        }
+        let mut map = self.inner.lock().await;
+        let now = Instant::now();
+        let queue = map.entry(ip.to_string()).or_default();
+        // Remove entries older than the window
+        queue.retain(|&t| now.duration_since(t) < self.window);
+        if queue.len() as u32 >= self.max {
+            return false;
+        }
+        queue.push_back(now);
+        true
+    }
+}
+
 // ── Relay-level context passed into per-connection handlers ───────────────────
 
 /// Immutable relay-level context that every tunnel handler needs.
@@ -34,6 +73,7 @@ pub struct ConnCtx {
     pub http_client: reqwest::Client,
     /// 0 = unlimited.
     pub max_tunnels_per_ip: u32,
+    pub rate_limiter: RateLimiter,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -170,19 +210,28 @@ impl WebhookCtx {
 pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
     let ConnCtx {
         tunnels, tcp_ports, base_domain, http_port, https_port, auth, metrics, client_ip,
-        webhook_url, http_client, max_tunnels_per_ip,
+        webhook_url, http_client, max_tunnels_per_ip, rate_limiter,
     } = ctx;
     let webhook = WebhookCtx { url: webhook_url, client: http_client };
     let t0 = Instant::now();
 
-    let mut control = mux
-        .accept_stream()
-        .await
-        .ok_or_else(|| anyhow!("client dropped before opening control stream"))?;
-
-    let frame = read_frame(&mut control)
-        .await
-        .context("reading register frame")?;
+    // Wrap accept_stream + read_frame in a 30-second timeout to prevent
+    // resource exhaustion from clients that connect but never register.
+    let (mut control, frame) = tokio::time::timeout(
+        Duration::from_secs(30),
+        async {
+            let mut control = mux
+                .accept_stream()
+                .await
+                .ok_or_else(|| anyhow!("client dropped before opening control stream"))?;
+            let frame = read_frame(&mut control)
+                .await
+                .context("reading register frame")?;
+            Ok::<_, anyhow::Error>((control, frame))
+        },
+    )
+    .await
+    .map_err(|_| anyhow!("registration timeout from {client_ip}"))??;
 
     let (kind, token) = match frame {
         ControlFrame::Register { version, kind, token } => {
@@ -216,6 +265,15 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     let handshake_ms = t0.elapsed().as_millis() as u64;
     metrics.record_handshake_ms(handshake_ms);
+
+    // Enforce per-IP connection rate limit.
+    if !rate_limiter.check_and_record(&client_ip).await {
+        write_frame(&mut control, &ControlFrame::Error {
+            code: 429,
+            message: "too many connections from your IP — try again later".into(),
+        }).await.ok();
+        return Err(anyhow!("rate limited: {client_ip}"));
+    }
 
     // Enforce per-IP tunnel limit.
     if max_tunnels_per_ip > 0 {
@@ -251,6 +309,21 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
     }
 }
 
+// ── Subdomain validation ──────────────────────────────────────────────────────
+
+fn validate_subdomain(s: &str) -> Result<()> {
+    if s.is_empty() || s.len() > 63 {
+        bail!("subdomain must be 1–63 characters");
+    }
+    if !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        bail!("subdomain may only contain [a-z0-9-]");
+    }
+    if s.starts_with('-') || s.ends_with('-') {
+        bail!("subdomain must not start or end with '-'");
+    }
+    Ok(())
+}
+
 // ── HTTP tunnel ───────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -266,6 +339,13 @@ async fn serve_http(
     client_ip: &str,
     webhook: WebhookCtx,
 ) -> Result<()> {
+    // Validate client-requested subdomains before falling back to random.
+    if let Some(ref requested) = subdomain {
+        if let Err(e) = validate_subdomain(requested) {
+            write_frame(&mut control, &ControlFrame::Error { code: 400, message: e.to_string() }).await.ok();
+            return Err(anyhow!("invalid subdomain '{requested}': {e}"));
+        }
+    }
     let sub = subdomain.unwrap_or_else(random_subdomain);
     let url = if let Some(port) = https_port {
         if port == 443 {

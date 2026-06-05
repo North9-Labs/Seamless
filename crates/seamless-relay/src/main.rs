@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use seam_protocol::api::Server;
@@ -24,7 +24,7 @@ mod tunnel;
 use logs::LogBuffer;
 use metrics::Metrics;
 use store::SharedStore;
-use tunnel::{AuthPolicy, TcpPortSet, TunnelMap};
+use tunnel::{AuthPolicy, RateLimiter, TcpPortSet, TunnelMap};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -53,6 +53,8 @@ pub struct AppState {
     pub webhook_url: Arc<Option<String>>,
     /// Max simultaneous tunnels per client IP (0 = unlimited).
     pub max_tunnels_per_ip: u32,
+    /// Per-IP new-connection rate limiter.
+    pub rate_limiter: RateLimiter,
 }
 
 pub struct RelayPubkeys {
@@ -129,6 +131,14 @@ struct Args {
           value_parser = ["chacha20poly1305", "aes256gcm"],
           env = "SEAMLESS_CIPHER")]
     cipher: String,
+
+    /// Max new tunnel registrations per minute per client IP (0 = unlimited).
+    #[arg(long, default_value_t = 10, env = "SEAMLESS_RATE_LIMIT")]
+    rate_limit: u32,
+
+    /// Log output format: "text" (human-readable, default) or "json" (structured, for SIEM/log aggregators).
+    #[arg(long, default_value = "text", value_parser = ["text", "json"], env = "SEAMLESS_LOG_FORMAT")]
+    log_format: String,
 }
 
 #[tokio::main]
@@ -138,13 +148,13 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                format!("{},seamless_relay=debug", args.log_level).into()
-            }),
-        )
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| format!("{},seamless_relay=debug", args.log_level).into());
+    if args.log_format == "json" {
+        tracing_subscriber::fmt().json().with_env_filter(env_filter).init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    }
 
     let store_path = Arc::new(PathBuf::from(&args.store));
     let store = store::load(&store_path).await?;
@@ -200,6 +210,7 @@ async fn main() -> Result<()> {
         auth_file: Arc::new(args.auth_file.clone()),
         webhook_url: Arc::new(args.webhook_url.clone()),
         max_tunnels_per_ip: args.max_tunnels_per_ip,
+        rate_limiter: RateLimiter::new(args.rate_limit, Duration::from_secs(60)),
     };
 
     // Start admin UI server.
@@ -295,6 +306,7 @@ async fn main() -> Result<()> {
                         webhook_url: (*s.webhook_url).clone().map(Arc::new),
                         http_client: s.http_client.clone(),
                         max_tunnels_per_ip: s.max_tunnels_per_ip,
+                        rate_limiter: s.rate_limiter,
                     };
                     if let Err(e) = tunnel::handle_client(mux, ctx).await {
                         warn!("client from {remote} ended: {e:#}");

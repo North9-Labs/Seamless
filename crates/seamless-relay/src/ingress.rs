@@ -84,7 +84,7 @@ where
         Err(_elapsed) => return Ok(()), // idle timeout — silently drop
         Ok(Err(e)) => return Err(e.into()),
         Ok(Ok(false)) if head.len() > 64 * 1024 => {
-            let resp = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let resp = error_response("431 Request Header Fields Too Large", "", is_https);
             if let Err(e) = stream.write_all(resp.as_bytes()).await {
                 warn!("431 write failed for {peer}: {e}");
             }
@@ -97,7 +97,7 @@ where
     let host = match parse_host_header(&head) {
         Some(h) => h,
         None => {
-            let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 25\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nmissing Host: header\n";
+            let resp = error_response("400 Bad Request", "missing Host: header\n", is_https);
             if let Err(e) = stream.write_all(resp.as_bytes()).await {
                 warn!("400 write failed for {peer}: {e}");
             }
@@ -123,10 +123,7 @@ where
             Err(e) => {
                 warn!("bad upstream URL '{url}': {e}");
                 let body = format!("seamless: misconfigured upstream for '{host}'\n");
-                let resp = format!(
-                    "HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
-                    body.len(), body
-                );
+                let resp = error_response("502 Bad Gateway", &body, is_https);
                 stream.write_all(resp.as_bytes()).await.ok();
                 return Ok(());
             }
@@ -149,10 +146,7 @@ where
                     status: 502,
                 }).await;
                 let body = format!("seamless: upstream '{addr}' unreachable\n");
-                let resp = format!(
-                    "HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
-                    body.len(), body
-                );
+                let resp = error_response("502 Bad Gateway", &body, is_https);
                 stream.write_all(resp.as_bytes()).await.ok();
                 return Ok(());
             }
@@ -167,10 +161,7 @@ where
                     status: 504,
                 }).await;
                 let body = format!("seamless: upstream '{addr}' timed out\n");
-                let resp = format!(
-                    "HTTP/1.1 504 Gateway Timeout\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
-                    body.len(), body
-                );
+                let resp = error_response("504 Gateway Timeout", &body, is_https);
                 stream.write_all(resp.as_bytes()).await.ok();
                 return Ok(());
             }
@@ -200,11 +191,7 @@ where
             // If the tunnel is paused, return 503.
             if entry.paused.load(Ordering::Relaxed) {
                 let body = format!("seamless: tunnel '{sub}' is paused\n");
-                let resp = format!(
-                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
+                let resp = error_response("503 Service Unavailable", &body, is_https);
                 if let Err(e) = stream.write_all(resp.as_bytes()).await {
                     warn!("503 write failed for {peer}: {e}");
                 }
@@ -248,15 +235,25 @@ where
         status: 502,
     }).await;
     let body = format!("seamless: no route for '{host}'\n");
-    let resp = format!(
-        "HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    );
+    let resp = error_response("502 Bad Gateway", &body, is_https);
     if let Err(e) = stream.write_all(resp.as_bytes()).await {
         warn!("502 write failed for {peer}: {e}");
     }
     Ok(())
+}
+
+/// Build a relay-generated HTTP error response.
+/// When `is_https` is true, injects HSTS so browsers upgrade future requests.
+fn error_response(status: &str, body: &str, is_https: bool) -> String {
+    let hsts = if is_https {
+        "Strict-Transport-Security: max-age=63072000; includeSubDomains\r\n"
+    } else {
+        ""
+    };
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain\r\n{hsts}Connection: close\r\n\r\n{body}",
+        body.len()
+    )
 }
 
 fn parse_request_line(bytes: &[u8]) -> (String, String) {
@@ -414,5 +411,19 @@ mod tests {
         let out = inject_forwarding_headers(raw, "10.0.0.1", true);
         let s = std::str::from_utf8(&out).unwrap();
         assert!(s.contains("X-Forwarded-Proto: https\r\n"));
+    }
+
+    #[test]
+    fn error_response_http_no_hsts() {
+        let r = error_response("502 Bad Gateway", "oops\n", false);
+        assert!(!r.contains("Strict-Transport-Security"));
+        assert!(r.contains("Content-Length: 5"));
+    }
+
+    #[test]
+    fn error_response_https_has_hsts() {
+        let r = error_response("503 Service Unavailable", "paused\n", true);
+        assert!(r.contains("Strict-Transport-Security: max-age=63072000; includeSubDomains\r\n"));
+        assert!(r.contains("Content-Length: 7"));
     }
 }
