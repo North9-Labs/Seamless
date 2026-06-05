@@ -163,7 +163,7 @@ pub async fn handle_client(
             serve_http(mux, control, tunnels, base_domain, http_port, subdomain, metrics).await
         }
         TunnelKind::Tcp { port } => {
-            serve_tcp(mux, control, tcp_ports, base_domain, port, metrics).await
+            serve_tcp(mux, control, tunnels, tcp_ports, base_domain, port, metrics).await
         }
     }
 }
@@ -259,6 +259,7 @@ async fn serve_http(
 async fn serve_tcp(
     mux: Arc<SeamMux>,
     mut control: SeamStream,
+    tunnels: TunnelMap,
     tcp_ports: TcpPortSet,
     base_domain: String,
     requested_port: u16,
@@ -279,6 +280,23 @@ async fn serve_tcp(
     write_frame(&mut control, &ControlFrame::Registered { public_url: url.clone() }).await?;
     info!("registered tcp tunnel: {url}");
 
+    let (disconnect_tx, disconnect_rx) = oneshot::channel::<()>();
+    let bytes_in = Arc::new(AtomicU64::new(0));
+    let bytes_out = Arc::new(AtomicU64::new(0));
+    let tunnel_key = format!("tcp:{port}");
+
+    let entry = Arc::new(TunnelEntry {
+        mux: mux.clone(),
+        subdomain: tunnel_key.clone(),
+        connected_at: crate::store::unix_now(),
+        client_ip: String::new(),
+        bytes_in: bytes_in.clone(),
+        bytes_out: bytes_out.clone(),
+        paused: Arc::new(AtomicBool::new(false)),
+        disconnect_tx: Arc::new(Mutex::new(Some(disconnect_tx))),
+    });
+    tunnels.lock().await.insert(tunnel_key.clone(), entry);
+
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let mux_for_listener = mux.clone();
     let listener_task = tokio::spawn(async move {
@@ -290,8 +308,13 @@ async fn serve_tcp(
     ping_interval.tick().await; // discard first immediate tick
 
     let mut drain = [0u8; 256];
+    let mut disconnect_rx = disconnect_rx;
     loop {
         tokio::select! {
+            _ = &mut disconnect_rx => {
+                info!("admin forcibly disconnected tcp tunnel on port {port}");
+                break;
+            }
             _ = ping_interval.tick() => {
                 if write_frame(&mut control, &ControlFrame::Ping).await.is_err() {
                     break;
@@ -309,6 +332,7 @@ async fn serve_tcp(
     let _ = shutdown_tx.send(());
     let _ = listener_task.await;
     tcp_ports.lock().await.remove(&port);
+    tunnels.lock().await.remove(&tunnel_key);
     info!("deregistered tcp tunnel on port {port}");
     Ok(())
 }

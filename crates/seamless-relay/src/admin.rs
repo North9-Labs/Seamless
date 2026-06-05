@@ -206,32 +206,33 @@ async fn delete_route(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
 // ── Seamless Tunnels (read-only list) ─────────────────────────────────────────
 
 async fn list_seamless_tunnels(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let http: Vec<_> = {
-        let t = s.tunnels.lock().await;
-        t.values()
-            .map(|entry| {
-                serde_json::json!({
-                    "subdomain": entry.subdomain,
-                    "url": format!("http://{}.{}:{}", entry.subdomain, s.base_domain, s.http_port),
-                    "paused": entry.paused.load(Ordering::Relaxed),
-                    "connected_at": entry.connected_at,
-                    "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
-                    "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
-                })
+    let t = s.tunnels.lock().await;
+    let (http, tcp): (Vec<_>, Vec<_>) = t.values().partition(|e| !e.subdomain.starts_with("tcp:"));
+    let http: Vec<_> = http
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "subdomain": entry.subdomain,
+                "url": format!("http://{}.{}:{}", entry.subdomain, s.base_domain, s.http_port),
+                "paused": entry.paused.load(Ordering::Relaxed),
+                "connected_at": entry.connected_at,
+                "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
+                "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
             })
-            .collect()
-    };
-    let tcp: Vec<_> = {
-        let p = s.tcp_ports.lock().await;
-        p.iter()
-            .map(|port| {
-                serde_json::json!({
-                    "port": port,
-                    "url": format!("tcp://{}:{}", s.base_domain, port),
-                })
+        })
+        .collect();
+    let tcp: Vec<_> = tcp
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "key": entry.subdomain,
+                "url": format!("tcp://{}:{}", s.base_domain, entry.subdomain.trim_start_matches("tcp:")),
+                "connected_at": entry.connected_at,
+                "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
+                "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
             })
-            .collect()
-    };
+        })
+        .collect();
     Json(serde_json::json!({ "http": http, "tcp": tcp }))
 }
 

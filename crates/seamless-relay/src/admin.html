@@ -1441,7 +1441,7 @@ async function loadSeamlessTunnels() {
       rows.push({url:t.url, kind:'HTTP', subdomain:t.subdomain, paused:t.paused, connected_at:t.connected_at, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0});
     });
     d.tcp.forEach(function(t) {
-      rows.push({url:t.url, kind:'TCP', subdomain:null, paused:false, connected_at:null, bytes_in:0, bytes_out:0});
+      rows.push({url:t.url, kind:'TCP', subdomain:t.key||null, paused:false, connected_at:t.connected_at||null, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0});
     });
     if (!rows.length) {
       tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><div class="ei"><i data-lucide="cable" width="34" height="34"></i></div><span class="et">No active tunnels</span><span class="es">Connect a Seamless client using the command above</span></td></tr>';
