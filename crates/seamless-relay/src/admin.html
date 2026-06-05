@@ -837,6 +837,10 @@
             <i data-lucide="refresh-cw" width="12" height="12"></i>
           </button>
         </div>
+        <div class="log-bar">
+          <input class="log-search" id="tunnel-search" placeholder="Filter by subdomain or IP…" oninput="filterTunnels()" autocomplete="off" spellcheck="false">
+          <span style="margin-left:auto;font-size:11px;color:var(--text3)" id="tunnel-count"></span>
+        </div>
         <table>
           <thead><tr>
             <th>Public URL</th>
@@ -1443,6 +1447,53 @@ async function deleteRoute(id) {
 }
 
 // ── Seamless Tunnels ─────────────────────────────────────────────
+var _allTunnelRows = [];
+
+function filterTunnels() {
+  var q = document.getElementById('tunnel-search').value.toLowerCase().trim();
+  var visible = q
+    ? _allTunnelRows.filter(function(t) {
+        return (t.url || '').toLowerCase().indexOf(q) >= 0
+            || (t.subdomain || '').toLowerCase().indexOf(q) >= 0
+            || (t.client_ip || '').toLowerCase().indexOf(q) >= 0;
+      })
+    : _allTunnelRows;
+  renderTunnelRows(visible);
+}
+
+function renderTunnelRows(rows) {
+  var tb = document.getElementById('seamless-tunnels-body');
+  var countEl = document.getElementById('tunnel-count');
+  if (!rows.length) {
+    var allEmpty = _allTunnelRows.length === 0;
+    tb.innerHTML = '<tr><td colspan="6" class="empty-cell">'
+      + (allEmpty
+          ? '<div class="ei"><i data-lucide="cable" width="34" height="34"></i></div><span class="et">No active tunnels</span><span class="es">Connect a Seamless client using the command above</span>'
+          : '<span class="t3">No tunnels match your filter</span>')
+      + '</td></tr>';
+    lucide.createIcons();
+    if (countEl) countEl.textContent = allEmpty ? '' : '0 of ' + _allTunnelRows.length;
+    return;
+  }
+  if (countEl) countEl.textContent = rows.length + ' of ' + _allTunnelRows.length + ' tunnel' + (_allTunnelRows.length !== 1 ? 's' : '');
+  tb.innerHTML = rows.map(function(t) {
+    var uptime = t.connected_at ? fmtUptime(t.connected_at) : '—';
+    var sub = t.subdomain || '';
+    var pauseBtn = sub ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="'+(t.paused?'resumeTunnel':'pauseTunnel')+'(\''+esc(sub)+'\')" title="'+(t.paused?'Resume':'Pause')+'"><i data-lucide="'+(t.paused?'play':'pause')+'" width="11" height="11"></i></button>' : '';
+    var disconnBtn = sub ? '<button class="btn btn-danger btn-sm btn-icon" onclick="disconnectTunnel(\''+esc(sub)+'\')" title="Disconnect"><i data-lucide="x" width="11" height="11"></i></button>' : '';
+    var ipHint = t.client_ip ? '<div style="font-size:10px;color:var(--text3);margin-top:1px">'+esc(t.client_ip)+'</div>' : '';
+    return '<tr>'
+      + '<td class="tm">' + esc(t.url) + ipHint + '</td>'
+      + '<td><span class="badge '+(t.kind==='HTTP'?'b-green':'b-blue')+'">'+t.kind+'</span>'+(t.paused?' <span class="badge b-amber">Paused</span>':'')+'</td>'
+      + '<td class="t3">'+uptime+'</td>'
+      + '<td class="t3 tm">↓'+fmtBytes(t.bytes_in)+' ↑'+fmtBytes(t.bytes_out)+'</td>'
+      + '<td>'+pauseBtn+'</td>'
+      + '<td><div class="flex">'+disconnBtn+'</div></td>'
+      + '</tr>';
+  }).join('');
+  lucide.createIcons();
+}
+
 function fmtUptime(connectedAt) {
   if (!connectedAt) return '—';
   var secs = Math.floor(Date.now() / 1000) - connectedAt;
@@ -1586,35 +1637,15 @@ async function loadSeamlessTunnels() {
     var d = await api('GET','/tunnels');
     _tunnelLastUpdated = Date.now();
     _updateTunnelAgo();
-    var tb = document.getElementById('seamless-tunnels-body');
-    var rows = [];
+    _allTunnelRows = [];
     d.http.forEach(function(t) {
-      rows.push({url:t.url, kind:'HTTP', subdomain:t.subdomain, paused:t.paused, connected_at:t.connected_at, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0, client_ip:t.client_ip||''});
+      _allTunnelRows.push({url:t.url, kind:'HTTP', subdomain:t.subdomain, paused:t.paused, connected_at:t.connected_at, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0, client_ip:t.client_ip||''});
     });
     d.tcp.forEach(function(t) {
-      rows.push({url:t.url, kind:'TCP', subdomain:t.key||null, paused:false, connected_at:t.connected_at||null, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0, client_ip:t.client_ip||''});
+      _allTunnelRows.push({url:t.url, kind:'TCP', subdomain:t.key||null, paused:false, connected_at:t.connected_at||null, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0, client_ip:t.client_ip||''});
     });
-    if (!rows.length) {
-      tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><div class="ei"><i data-lucide="cable" width="34" height="34"></i></div><span class="et">No active tunnels</span><span class="es">Connect a Seamless client using the command above</span></td></tr>';
-      lucide.createIcons();
-      return;
-    }
-    tb.innerHTML = rows.map(function(t) {
-      var uptime = t.connected_at ? fmtUptime(t.connected_at) : '—';
-      var sub = t.subdomain || '';
-      var pauseBtn = sub ? '<button class="btn btn-ghost btn-sm btn-icon" onclick="'+(t.paused?'resumeTunnel':'pauseTunnel')+'(\''+esc(sub)+'\')" title="'+(t.paused?'Resume':'Pause')+'"><i data-lucide="'+(t.paused?'play':'pause')+'" width="11" height="11"></i></button>' : '';
-      var disconnBtn = sub ? '<button class="btn btn-danger btn-sm btn-icon" onclick="disconnectTunnel(\''+esc(sub)+'\')" title="Disconnect"><i data-lucide="x" width="11" height="11"></i></button>' : '';
-      var ipHint = t.client_ip ? '<div style="font-size:10px;color:var(--text3);margin-top:1px">'+esc(t.client_ip)+'</div>' : '';
-      return '<tr>'
-        + '<td class="tm">' + esc(t.url) + ipHint + '</td>'
-        + '<td><span class="badge '+(t.kind==='HTTP'?'b-green':'b-blue')+'">'+t.kind+'</span>'+(t.paused?' <span class="badge b-amber">Paused</span>':'')+'</td>'
-        + '<td class="t3">'+uptime+'</td>'
-        + '<td class="t3 tm">↓'+fmtBytes(t.bytes_in)+' ↑'+fmtBytes(t.bytes_out)+'</td>'
-        + '<td>'+pauseBtn+'</td>'
-        + '<td><div class="flex">'+disconnBtn+'</div></td>'
-        + '</tr>';
-    }).join('');
-    lucide.createIcons();
+    // Re-apply any active search filter after refresh.
+    filterTunnels();
   } catch(e) {}
 }
 

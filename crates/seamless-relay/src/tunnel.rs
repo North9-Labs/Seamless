@@ -295,6 +295,14 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
 
     // Wrap accept_stream + read_frame in a 30-second timeout to prevent
     // resource exhaustion from clients that connect but never register.
+    //
+    // Slow loris protection: the inner `read_frame` call is wrapped in its own
+    // 5-second deadline.  Legitimate clients send the Register frame in a single
+    // burst (the framed payload is always well under 1 KiB); only a slow loris
+    // attacker dribbles data byte-by-byte to hold the 30-second outer timeout
+    // open across thousands of connections.  By requiring the full frame to
+    // arrive within 5 seconds, we limit each slow loris connection to exactly
+    // 5 seconds of server resources rather than 30.
     let (mut control, frame) = tokio::time::timeout(
         Duration::from_secs(30),
         async {
@@ -302,9 +310,30 @@ pub async fn handle_client(mux: Arc<SeamMux>, ctx: ConnCtx) -> Result<()> {
                 .accept_stream()
                 .await
                 .ok_or_else(|| anyhow!("client dropped before opening control stream"))?;
-            let frame = read_frame(&mut control)
-                .await
-                .context("reading register frame")?;
+
+            // Slow loris guard: require the complete Register frame within 5 s.
+            let frame = match tokio::time::timeout(
+                Duration::from_secs(5),
+                read_frame(&mut control),
+            )
+            .await
+            {
+                Ok(Ok(f)) => f,
+                Ok(Err(e)) => {
+                    return Err(anyhow!("reading register frame: {e:#}"));
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        event = "slow_loris.blocked",
+                        client_ip = %client_ip,
+                        "slow loris connection blocked from {client_ip}: register frame took > 5s"
+                    );
+                    return Err(anyhow!(
+                        "slow loris: register frame not received within 5s from {client_ip}"
+                    ));
+                }
+            };
+
             Ok::<_, anyhow::Error>((control, frame))
         },
     )

@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use seamless_common::{write_frame, ControlFrame};
@@ -12,6 +13,11 @@ use tracing::{info, warn};
 use crate::logs::{self, LogEntry};
 use crate::store::unix_now;
 use crate::AppState;
+
+/// A hot-swappable TLS acceptor.  New connections clone the current `TlsAcceptor`
+/// under the read lock; SIGUSR1 replaces it under the write lock without dropping
+/// any existing connections (they keep their old acceptor reference alive).
+pub type HotAcceptor = Arc<std::sync::RwLock<TlsAcceptor>>;
 
 pub async fn run_http_ingress(addr: SocketAddr, state: AppState) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
@@ -29,14 +35,17 @@ pub async fn run_http_ingress(addr: SocketAddr, state: AppState) -> Result<()> {
 
 pub async fn run_https_ingress(
     addr: SocketAddr,
-    acceptor: TlsAcceptor,
+    acceptor: HotAcceptor,
     state: AppState,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!("https ingress listening on tcp://{addr}");
     loop {
         let (tcp, peer) = listener.accept().await?;
-        let acceptor = acceptor.clone();
+        // Clone the current acceptor under the read lock — O(1) and non-blocking.
+        // SIGUSR1 can swap the inner acceptor at any time; existing connections
+        // are unaffected because they hold their own clone.
+        let acceptor = acceptor.read().expect("hot acceptor RwLock poisoned").clone();
         let state = state.clone();
         tokio::spawn(async move {
             match acceptor.accept(tcp).await {

@@ -683,7 +683,7 @@ async fn main() -> Result<()> {
 
     // Start HTTPS ingress if configured.
     if let Some(https_addr) = args.https_addr {
-        let acceptor = if args.tls_self_signed {
+        let base_acceptor = if args.tls_self_signed {
             tls::self_signed_acceptor(&[&args.base_domain])
                 .context("failed to generate self-signed TLS cert")?
         } else if let (Some(cert), Some(key)) = (&args.tls_cert, &args.tls_key) {
@@ -694,10 +694,53 @@ async fn main() -> Result<()> {
                 "--https-addr requires either --tls-self-signed or both --tls-cert and --tls-key"
             ));
         };
+
+        // Wrap in a hot-swappable acceptor so SIGUSR1 can rotate the cert.
+        let hot_acceptor: ingress::HotAcceptor =
+            Arc::new(std::sync::RwLock::new(base_acceptor));
+
+        // SIGUSR1 → hot-reload TLS cert/key from disk without dropping connections.
+        #[cfg(unix)]
+        {
+            let hot = hot_acceptor.clone();
+            let cert_path = args.tls_cert.clone();
+            let key_path  = args.tls_key.clone();
+            let self_signed = args.tls_self_signed;
+            let base_domain_for_reload = args.base_domain.clone();
+            tokio::spawn(async move {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut sigusr1 = match signal(SignalKind::user_defined1()) {
+                    Ok(s) => s,
+                    Err(e) => { warn!("SIGUSR1 handler failed to register: {e}"); return; }
+                };
+                loop {
+                    sigusr1.recv().await;
+                    info!("SIGUSR1: reloading TLS certificate from disk");
+                    let result = if self_signed {
+                        tls::self_signed_acceptor(&[&base_domain_for_reload])
+                    } else if let (Some(ref cert), Some(ref key)) = (&cert_path, &key_path) {
+                        tls::acceptor_from_files(cert, key)
+                    } else {
+                        warn!("SIGUSR1: no cert/key paths to reload (self-signed cert cannot be rotated)");
+                        continue;
+                    };
+                    match result {
+                        Ok(new_acceptor) => {
+                            *hot.write().expect("hot acceptor RwLock poisoned") = new_acceptor;
+                            info!("SIGUSR1: TLS certificate rotated successfully — new connections use new cert");
+                        }
+                        Err(e) => {
+                            warn!("SIGUSR1: TLS cert reload failed (keeping old cert active): {e:#}");
+                        }
+                    }
+                }
+            });
+        }
+
         info!("tls: starting https ingress on {https_addr}");
         let https_state = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = ingress::run_https_ingress(https_addr, acceptor, https_state).await {
+            if let Err(e) = ingress::run_https_ingress(https_addr, hot_acceptor, https_state).await {
                 tracing::error!("https ingress died: {e:#}");
             }
         });
