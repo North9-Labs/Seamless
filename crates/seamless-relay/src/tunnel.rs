@@ -78,12 +78,17 @@ impl AuthPolicy {
             return Err(AuthError::Required);
         };
         let tbytes = t.as_bytes();
+        let tlen = tbytes.len();
         let mut hit = 0u8;
         for candidate in allowed.iter() {
             let cbytes = candidate.as_bytes();
-            if cbytes.len() == tbytes.len() {
-                hit |= cbytes.ct_eq(tbytes).unwrap_u8();
-            }
+            // Constant-time: always call ct_eq even when lengths differ, using the
+            // shorter slice so we never panic, then mask by the length comparison.
+            // This avoids leaking whether any stored token has the same length.
+            let len_match: u8 = if cbytes.len() == tlen { 1 } else { 0 };
+            let cmp_len = cbytes.len().min(tlen);
+            let eq: u8 = cbytes[..cmp_len].ct_eq(&tbytes[..cmp_len]).unwrap_u8();
+            hit |= eq & len_match;
         }
         if hit == 1 {
             Ok(())

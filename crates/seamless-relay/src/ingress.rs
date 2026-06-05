@@ -272,12 +272,11 @@ fn parse_request_line(bytes: &[u8]) -> (String, String) {
 fn parse_host_header(bytes: &[u8]) -> Option<String> {
     let s = std::str::from_utf8(bytes).ok()?;
     for line in s.split("\r\n") {
-        if let Some(rest) = line
-            .strip_prefix("Host:")
-            .or_else(|| line.strip_prefix("host:"))
-            .or_else(|| line.strip_prefix("HOST:"))
-        {
-            return Some(rest.trim().to_string());
+        // HTTP headers are case-insensitive (RFC 7230 §3.2).
+        if let Some(colon) = line.find(':') {
+            if line[..colon].eq_ignore_ascii_case("host") {
+                return Some(line[colon + 1..].trim().to_string());
+            }
         }
     }
     None

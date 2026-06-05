@@ -215,6 +215,8 @@ async fn list_seamless_tunnels(State(s): State<Arc<AppState>>) -> Json<serde_jso
                     "url": format!("http://{}.{}:{}", entry.subdomain, s.base_domain, s.http_port),
                     "paused": entry.paused.load(Ordering::Relaxed),
                     "connected_at": entry.connected_at,
+                    "bytes_in": entry.bytes_in.load(Ordering::Relaxed),
+                    "bytes_out": entry.bytes_out.load(Ordering::Relaxed),
                 })
             })
             .collect()

@@ -1028,7 +1028,7 @@
 let curSection = 'dashboard';
 let routeMap = new Map(), dnsMap = new Map(), cfTunnelMap = new Map();
 let selectedZoneId = null, allLogs = [], healthCache = {}, logTimer = null;
-let editingRouteId = null;
+let editingRouteId = null, tunnelTimer = null;
 
 // ── Theme ──────────────────────────────────────────────────────
 function updateThemeIcon() {
@@ -1061,7 +1061,8 @@ function nav(s) {
   if (s === 'dashboard')  loadDashboard();
   if (s === 'logs')       loadLogs();
   if (s === 'proxy')      loadRoutes();
-  if (s === 'tunnels')    { loadSeamlessTunnels(); loadStatus(); }
+  if (s === 'tunnels')    { loadSeamlessTunnels(); loadStatus(); clearInterval(tunnelTimer); tunnelTimer = setInterval(loadSeamlessTunnels, 5000); }
+  else { clearInterval(tunnelTimer); tunnelTimer = null; }
   if (s === 'cf-tunnels') loadCfTunnels();
   if (s === 'dns')        loadZones();
   if (s === 'settings')   { loadSettings(); loadStatus(); }
@@ -1405,10 +1406,10 @@ async function loadSeamlessTunnels() {
     var tb = document.getElementById('seamless-tunnels-body');
     var rows = [];
     d.http.forEach(function(t) {
-      rows.push({url:t.url, kind:'HTTP', subdomain:t.subdomain, paused:t.paused, connected_at:t.connected_at});
+      rows.push({url:t.url, kind:'HTTP', subdomain:t.subdomain, paused:t.paused, connected_at:t.connected_at, bytes_in:t.bytes_in||0, bytes_out:t.bytes_out||0});
     });
     d.tcp.forEach(function(t) {
-      rows.push({url:t.url, kind:'TCP', subdomain:null, paused:false, connected_at:null});
+      rows.push({url:t.url, kind:'TCP', subdomain:null, paused:false, connected_at:null, bytes_in:0, bytes_out:0});
     });
     if (!rows.length) {
       tb.innerHTML = '<tr><td colspan="6" class="empty-cell"><div class="ei"><i data-lucide="cable" width="34" height="34"></i></div><span class="et">No active tunnels</span><span class="es">Connect a Seamless client using the command above</span></td></tr>';
@@ -1424,7 +1425,7 @@ async function loadSeamlessTunnels() {
         + '<td class="tm">' + esc(t.url) + '</td>'
         + '<td><span class="badge '+(t.kind==='HTTP'?'b-green':'b-blue')+'">'+t.kind+'</span>'+(t.paused?' <span class="badge b-amber">Paused</span>':'')+'</td>'
         + '<td class="t3">'+uptime+'</td>'
-        + '<td class="t3 tm">—</td>'
+        + '<td class="t3 tm">↓'+fmtBytes(t.bytes_in)+' ↑'+fmtBytes(t.bytes_out)+'</td>'
         + '<td>'+pauseBtn+'</td>'
         + '<td><div class="flex">'+disconnBtn+'</div></td>'
         + '</tr>';
