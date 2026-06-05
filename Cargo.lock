@@ -1835,7 +1835,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "seam-protocol"
-version = "0.1.14"
+version = "0.1.16"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1874,7 +1874,7 @@ dependencies = [
 
 [[package]]
 name = "seamless-client"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "seamless-common"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "bincode",
  "bytes",
@@ -1904,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "seamless-relay"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "axum",

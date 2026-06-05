@@ -6,9 +6,10 @@ use subtle::ConstantTimeEq;
 
 use axum::{
     Router,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse},
+    extract::{ConnectInfo, Path, State},
+    http::{HeaderMap, Request, StatusCode},
+    middleware::{self, Next},
+    response::{Html, IntoResponse, Response},
     routing::{delete, get, post, put},
     Json,
 };
@@ -35,14 +36,14 @@ pub async fn start_admin(addr: SocketAddr, state: AppState) -> anyhow::Result<()
         // Proxy routes
         .route("/api/routes", get(list_routes).post(create_route))
         .route("/api/routes/{id}", put(update_route).delete(delete_route))
-        // Seamless tunnels — read-only list
+        // Seamless tunnels — read-only list (protected by admin token)
         .route("/api/tunnels", get(list_seamless_tunnels))
         // Seamless tunnels — admin management (protected by Bearer token)
         .route("/admin/tunnels/{id}", delete(admin_disconnect_tunnel))
         .route("/admin/tunnels/{id}/stats", get(admin_tunnel_stats))
         .route("/admin/tunnels/{id}/pause", post(admin_pause_tunnel))
         .route("/admin/tunnels/{id}/resume", post(admin_resume_tunnel))
-        // Logs + route health
+        // Logs + route health (logs protected by admin token)
         .route("/api/logs", get(get_logs))
         .route("/api/routes/health", get(health_routes))
         // Relay status
@@ -61,13 +62,28 @@ pub async fn start_admin(addr: SocketAddr, state: AppState) -> anyhow::Result<()
             "/api/cf/dns/{zone_id}/{record_id}",
             put(cf_update_dns).delete(cf_delete_dns),
         )
+        .layer(middleware::from_fn_with_state(shared.clone(), require_admin_ip))
         .layer(CorsLayer::permissive())
         .with_state(shared);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!("admin ui listening on http://{addr}");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
+}
+
+// ── IP allowlist middleware ───────────────────────────────────────────────────
+
+async fn require_admin_ip(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    if !crate::ip_in_cidr(addr.ip(), &s.admin_cidrs) {
+        return (StatusCode::FORBIDDEN, "Admin access denied from your IP\n").into_response();
+    }
+    next.run(req).await
 }
 
 // ── UI ──────────────────────────────────────────────────────────────────────
@@ -205,7 +221,13 @@ async fn delete_route(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
 
 // ── Seamless Tunnels (read-only list) ─────────────────────────────────────────
 
-async fn list_seamless_tunnels(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn list_seamless_tunnels(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
     let t = s.tunnels.lock().await;
     let now = unix_now();
     let (http, tcp): (Vec<_>, Vec<_>) = t.values().partition(|e| !e.subdomain.starts_with("tcp:"));
@@ -250,7 +272,7 @@ async fn list_seamless_tunnels(State(s): State<Arc<AppState>>) -> Json<serde_jso
             })
         })
         .collect();
-    Json(serde_json::json!({ "http": http, "tcp": tcp }))
+    Json(serde_json::json!({ "http": http, "tcp": tcp })).into_response()
 }
 
 // ── Admin tunnel management (protected by Bearer token) ───────────────────────
@@ -469,10 +491,16 @@ async fn get_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
 
 // ── Logs ──────────────────────────────────────────────────────────────────────
 
-async fn get_logs(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn get_logs(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(deny) = check_admin_auth(&headers, &s.admin_token) {
+        return deny.into_response();
+    }
     let buf = s.log_buffer.lock().await;
     let entries: Vec<_> = buf.iter().rev().cloned().collect();
-    Json(serde_json::json!(entries))
+    Json(serde_json::json!(entries)).into_response()
 }
 
 // ── Health ────────────────────────────────────────────────────────────────────

@@ -694,4 +694,50 @@ mod tests {
         assert!(p.check(Some("token-c")).is_ok());
         assert!(matches!(p.check(Some("token-d")), Err(AuthError::Invalid)));
     }
+
+    #[test]
+    fn validate_subdomain_valid() {
+        assert!(validate_subdomain("abc").is_ok());
+        assert!(validate_subdomain("abc-def").is_ok());
+        assert!(validate_subdomain("abc123").is_ok());
+        assert!(validate_subdomain("a").is_ok());
+        assert!(validate_subdomain(&"a".repeat(63)).is_ok());
+    }
+
+    #[test]
+    fn validate_subdomain_invalid() {
+        assert!(validate_subdomain("").is_err());               // empty
+        assert!(validate_subdomain("-abc").is_err());           // leading hyphen
+        assert!(validate_subdomain("abc-").is_err());           // trailing hyphen
+        assert!(validate_subdomain("abc.def").is_err());        // dot not allowed
+        assert!(validate_subdomain("abc def").is_err());        // space not allowed
+        assert!(validate_subdomain("abc_def").is_err());        // underscore not allowed
+        assert!(validate_subdomain(&"a".repeat(64)).is_err());  // too long
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_allows_within_limit() {
+        let rl = RateLimiter::new(3, Duration::from_secs(60));
+        assert!(rl.check_and_record("1.2.3.4").await);
+        assert!(rl.check_and_record("1.2.3.4").await);
+        assert!(rl.check_and_record("1.2.3.4").await);
+        // 4th should be denied
+        assert!(!rl.check_and_record("1.2.3.4").await);
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_unlimited_when_zero() {
+        let rl = RateLimiter::new(0, Duration::from_secs(60));
+        for _ in 0..100 {
+            assert!(rl.check_and_record("1.2.3.4").await);
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_separate_ips_independent() {
+        let rl = RateLimiter::new(1, Duration::from_secs(60));
+        assert!(rl.check_and_record("1.1.1.1").await);
+        assert!(!rl.check_and_record("1.1.1.1").await); // second from same IP denied
+        assert!(rl.check_and_record("2.2.2.2").await);  // different IP still allowed
+    }
 }

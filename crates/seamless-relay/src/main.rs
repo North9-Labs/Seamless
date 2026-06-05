@@ -55,6 +55,8 @@ pub struct AppState {
     pub max_tunnels_per_ip: u32,
     /// Per-IP new-connection rate limiter.
     pub rate_limiter: RateLimiter,
+    /// Allowed CIDRs for admin UI access. Empty = allow all.
+    pub admin_cidrs: Arc<Vec<(u32, u32)>>,
 }
 
 pub struct RelayPubkeys {
@@ -139,6 +141,41 @@ struct Args {
     /// Log output format: "text" (human-readable, default) or "json" (structured, for SIEM/log aggregators).
     #[arg(long, default_value = "text", value_parser = ["text", "json"], env = "SEAMLESS_LOG_FORMAT")]
     log_format: String,
+
+    /// Restrict admin UI access to these CIDRs (comma-separated, e.g. 10.0.0.0/8,192.168.1.0/24).
+    /// If not set, all IPs are allowed. Can be repeated.
+    #[arg(long, env = "SEAMLESS_ADMIN_ALLOW_CIDR")]
+    admin_allow_cidr: Option<String>,
+}
+
+// ── CIDR helpers ──────────────────────────────────────────────────────────────
+
+/// Parse a CIDR string like "10.0.0.0/8" into a (network, mask) pair of u32.
+/// Returns `None` if the string is malformed.
+pub fn parse_cidr(s: &str) -> Option<(u32, u32)> {
+    let (ip_str, prefix_len_str) = s.trim().split_once('/')?;
+    let prefix_len: u32 = prefix_len_str.parse().ok().filter(|&n| n <= 32)?;
+    let ip: std::net::Ipv4Addr = ip_str.parse().ok()?;
+    let ip_u32 = u32::from(ip);
+    let mask = if prefix_len == 0 { 0 } else { !0u32 << (32 - prefix_len) };
+    Some((ip_u32 & mask, mask))
+}
+
+/// Returns `true` if `ip` falls within any of the given CIDRs.
+/// An empty list means "allow all". IPv6 addresses are denied when any
+/// IPv4 CIDRs are configured.
+pub fn ip_in_cidr(ip: std::net::IpAddr, cidrs: &[(u32, u32)]) -> bool {
+    if cidrs.is_empty() {
+        return true; // no restriction
+    }
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let ip_u32 = u32::from(v4);
+            cidrs.iter().any(|(net, mask)| ip_u32 & mask == *net)
+        }
+        // IPv6 — if CIDRs are all IPv4, deny IPv6 for safety
+        std::net::IpAddr::V6(_) => false,
+    }
 }
 
 #[tokio::main]
@@ -187,6 +224,19 @@ async fn main() -> Result<()> {
     let tunnels: TunnelMap = Arc::new(Mutex::new(HashMap::new()));
     let tcp_ports: TcpPortSet = Arc::new(Mutex::new(HashSet::new()));
 
+    let admin_cidrs: Vec<(u32, u32)> = args.admin_allow_cidr
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(parse_cidr)
+        .collect();
+    if !admin_cidrs.is_empty() {
+        info!("admin: IP allowlist active ({} CIDR(s) configured)", admin_cidrs.len());
+    } else {
+        info!("admin: no IP allowlist configured — all IPs permitted");
+    }
+
     let state = AppState {
         store,
         store_path,
@@ -211,6 +261,7 @@ async fn main() -> Result<()> {
         webhook_url: Arc::new(args.webhook_url.clone()),
         max_tunnels_per_ip: args.max_tunnels_per_ip,
         rate_limiter: RateLimiter::new(args.rate_limit, Duration::from_secs(60)),
+        admin_cidrs: Arc::new(admin_cidrs),
     };
 
     // Start admin UI server.
@@ -270,6 +321,30 @@ async fn main() -> Result<()> {
                     info!("SIGHUP: no auth file configured, nothing to reload");
                 }
             }
+        });
+    }
+
+    // SIGTERM → disconnect all active tunnels and shut down gracefully (Unix only).
+    #[cfg(unix)]
+    {
+        let tunnels_for_shutdown = tunnels.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+            sigterm.recv().await;
+            info!("SIGTERM received — disconnecting all tunnels and shutting down");
+            // Send disconnect signal to every active tunnel.
+            let mut map = tunnels_for_shutdown.lock().await;
+            for entry in map.values() {
+                if let Some(tx) = entry.disconnect_tx.lock().await.take() {
+                    let _ = tx.send(());
+                }
+            }
+            map.clear();
+            drop(map);
+            // Give in-flight connections time to drain before exiting.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            std::process::exit(0);
         });
     }
 
