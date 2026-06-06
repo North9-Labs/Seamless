@@ -119,9 +119,7 @@ impl AcmeClient {
                 .find(|c| c.r#type == challenge_type)
                 .ok_or_else(|| anyhow!("no {:?} challenge found", challenge_type))?;
 
-            let domain = match &authz.identifier {
-                Identifier::Dns(d) => d,
-            };
+            let Identifier::Dns(domain) = &authz.identifier;
 
             if let Some(ref cf_token) = self.config.cloudflare_api_token {
                 // DNS-01: create `_acme-challenge.<domain>` TXT record.

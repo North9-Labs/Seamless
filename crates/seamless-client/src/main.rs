@@ -361,6 +361,7 @@ fn handle_config(action: &ConfigAction) -> Result<()> {
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn run_session(
     relay: SocketAddr,
     x25519_pk: &[u8; 32],

@@ -1229,13 +1229,11 @@ async fn set_custom_domain(
     }
 
     // Check allowlist if not in open mode.
-    if !s.allow_custom_domains {
-        if !s.custom_domain_allowlist.contains(&domain) {
-            return (
+    if !s.allow_custom_domains && !s.custom_domain_allowlist.contains(&domain) {
+        return (
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({ "error": format!("domain '{domain}' is not in the allowlist") })),
             ).into_response();
-        }
     }
 
     // Register in the custom_domains map and also update the TunnelEntry.

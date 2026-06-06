@@ -290,7 +290,7 @@ fn epoch_to_ymd(secs: u64) -> (i32, u32, u32) {
 macro_rules! audit_event {
     ($log:expr, $event:expr, $($key:expr => $val:expr),* $(,)?) => {{
         let mut map = serde_json::Map::new();
-        map.insert("ts".to_string(), serde_json::json!(crate::store::unix_now()));
+        map.insert("ts".to_string(), serde_json::json!($crate::store::unix_now()));
         map.insert("event".to_string(), serde_json::json!($event));
         $(
             map.insert($key.to_string(), serde_json::json!($val));

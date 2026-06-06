@@ -58,6 +58,12 @@ pub struct StatsHistory {
     inner: Arc<Mutex<std::collections::VecDeque<StatsSnapshot>>>,
 }
 
+impl Default for StatsHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StatsHistory {
     pub fn new() -> Self {
         Self {
